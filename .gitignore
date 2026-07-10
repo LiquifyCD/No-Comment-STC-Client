@@ -10,3 +10,5 @@ dist/
 *.p12
 *.key
 *.mobileprovision
+.wrangler/
+.dev.vars
