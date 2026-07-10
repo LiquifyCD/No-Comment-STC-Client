@@ -2,6 +2,8 @@
 
 Private, unofficial Expo/React Native client for signing in to **your own** STC/BRP account and reading your own customer profile.
 
+Includes a Cloudflare Worker web deployment. The browser never receives BRP access/refresh tokens: encrypted server-side sessions are referenced by an opaque `HttpOnly`, `Secure`, `SameSite=Strict` cookie.
+
 ## Safety and scope
 
 - Read-only customer profile access only.
@@ -17,6 +19,14 @@ Private, unofficial Expo/React Native client for signing in to **your own** STC/
 2. Copy `.env.example` to `.env` and verify the base URL/app ID.
 3. Run `npm install`.
 4. Run `npm start`, then open Android, iOS, or web. SecureStore is intended for native builds; do not use production tokens in an untrusted browser.
+
+### Secure hosted web version
+
+1. Authenticate Wrangler: `npx wrangler login`.
+2. Create a 32-byte base64 key and store it only as the Worker secret `SESSION_ENCRYPTION_KEY`.
+3. Deploy with `npm run web:deploy`. Wrangler automatically provisions the KV binding declared in `wrangler.jsonc`.
+
+The web password is forwarded over HTTPS directly to BRP during login and is never stored or logged. BRP tokens and its affinity cookie are AES-GCM encrypted before being stored in KV. The frontend can only call the same-origin read-only profile route.
 
 ## Authentication flow
 
