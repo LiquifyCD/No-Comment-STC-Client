@@ -1,0 +1,1 @@
+{"expo":{"name":"BRP Personal Client","slug":"brp-personal-client","version":"0.1.0","scheme":"brppersonal","orientation":"portrait","userInterfaceStyle":"automatic","plugins":["expo-router","expo-secure-store"],"ios":{"supportsTablet":true,"bundleIdentifier":"com.liquifycd.brppersonal"},"android":{"package":"com.liquifycd.brppersonal"},"web":{"bundler":"metro"}}}
