@@ -1,9 +1,9 @@
 {
   "id": "/",
-  "name": "BRP Readers",
-  "short_name": "Readers",
-  "description": "Secure reader workspace management for BRP Personal Client.",
-  "start_url": "/readers",
+  "name": "BRP Open",
+  "short_name": "Open",
+  "description": "Minimal authorized BRP door client.",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",

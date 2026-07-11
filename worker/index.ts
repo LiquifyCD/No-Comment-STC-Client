@@ -3,6 +3,7 @@ import { validateReaderName } from './reader-model.mjs';
 import { parseReaderCatalog, publicReaderOptions } from './reader-catalog.mjs';
 import { sendDoorRequest } from './door-service.mjs';
 import { validateReaderCreation } from './reader-request.mjs';
+import { runOpenDoorFlow } from './open-door-flow.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type ActiveSession = { id:string; data:Session };
@@ -59,7 +60,20 @@ async function login(request:Request,env:Env) {
 
 async function sessionStatus(request:Request,env:Env) { const active=await getSession(request,env); if(!active)return response({authenticated:false}); return response({authenticated:true,expiresAt:new Date(active.data.expiresAt).toISOString(),csrfToken:await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY),passageEnabled:passageEnabled(env.PASSAGE_ENABLED)&&env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-')}); }
 async function listReaders(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; await ensureDefaultReader(env,auth.owner); const rows=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE owner_id=? ORDER BY COALESCE(last_opened_at,created_at) DESC').bind(auth.owner).all<ReaderRow>(); return response({readers:rows.results.map(serializeReader)}); }
-async function listReaderOptions(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const catalog=readerCatalog(env); if(!catalog.ok)return errorResponse(catalog.error,503); return response({options:publicReaderOptions(catalog)}); }
+async function listReaderOptions(env:Env) { const catalog=readerCatalog(env); if(!catalog.ok)return errorResponse(catalog.error,503); return response({options:publicReaderOptions(catalog)}); }
+async function openDoor(request:Request,env:Env) {
+ const origin=request.headers.get('origin'); if(origin&&origin!==new URL(request.url).origin)return errorResponse('Forbidden.',403);
+ const length=Number(request.headers.get('content-length')??0); if(length>2048)return errorResponse('Invalid request.',413);
+ const catalog=readerCatalog(env); if(!catalog.ok)return errorResponse('Door opening is unavailable.',503);
+ let body:unknown; try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}
+ if(!passageEnabled(env.PASSAGE_ENABLED)||!env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-'))return errorResponse('Door opening is disabled.',503);
+ const clientKey=await ownerId(`open:${request.headers.get('cf-connecting-ip')??'unknown'}`,env.SESSION_ENCRYPTION_KEY);
+ const rateKey=`open-rate:${clientKey}`; if(await env.SESSIONS.get(rateKey))return errorResponse('Try again later.',429);
+ await env.SESSIONS.put(rateKey,'1',{expirationTtl:30});
+ const result=await runOpenDoorFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body,catalog,enabled:true,authorizationId:env.PASSAGE_AUTHORIZATION_ID});
+ console.log(JSON.stringify({event:'open_door_result',status:result.status,ok:result.ok}));
+ return result.ok?response({ok:true},200):errorResponse(result.error,result.status);
+}
 async function createReader(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as unknown; const catalog=readerCatalog(env); if(!catalog.ok)return errorResponse(catalog.error,503); const valid=validateReaderCreation(body,catalog); if(!valid.ok)return errorResponse(valid.error,valid.status); const id=crypto.randomUUID(),now=new Date().toISOString(); try{await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at) VALUES(?,?,?,?,?,?,?)').bind(id,auth.owner,valid.name,valid.nameKey,valid.cardReader,now,now).run()}catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error} return response({reader:{id,name:valid.name,createdAt:now,lastOpenedAt:now}},201); }
 async function getReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const row=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).first<ReaderRow>(); if(!row)return errorResponse('Läsaren hittades inte.',404); const now=new Date().toISOString(); await env.DB.prepare('UPDATE readers SET last_opened_at=? WHERE id=? AND owner_id=?').bind(now,readerId,auth.owner).run(); const events=await env.DB.prepare('SELECT id,event_type,data_json,created_at FROM reader_events WHERE reader_id=? AND owner_id=? ORDER BY created_at DESC LIMIT 20').bind(readerId,auth.owner).all<{id:string;event_type:string;data_json:string;created_at:string}>(); return response({reader:{...serializeReader(row),lastOpenedAt:now},events:events.results.map(event=>({id:event.id,type:event.event_type,data:JSON.parse(event.data_json),createdAt:event.created_at}))}); }
 async function renameReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as {name?:unknown}; const valid=validateReaderName(body.name); if(!valid.ok)return errorResponse(valid.error,400); try{const result=await env.DB.prepare('UPDATE readers SET name=?,name_key=? WHERE id=? AND owner_id=?').bind(valid.name,valid.nameKey,readerId,auth.owner).run(); if(!result.meta.changes)return errorResponse('Läsaren hittades inte.',404)}catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error} return response({reader:{id:readerId,name:valid.name}}); }
@@ -81,8 +95,9 @@ export default { async fetch(request:Request,env:Env):Promise<Response> {
  try {
   const url=new URL(request.url),path=url.pathname;
   if(path==='/api/login'&&request.method==='POST'){if(!sameOrigin(request))return errorResponse('Otillåtet ursprung.',403);return await login(request,env)}
+  if(path==='/api/open-door'&&request.method==='POST')return await openDoor(request,env);
   if(path==='/api/session'&&request.method==='GET')return await sessionStatus(request,env);
-  if(path==='/api/reader-options'&&request.method==='GET')return await listReaderOptions(request,env);
+  if(path==='/api/reader-options'&&request.method==='GET')return await listReaderOptions(env);
   if(path==='/api/readers'&&request.method==='GET')return await listReaders(request,env);
   if(path==='/api/readers'&&request.method==='POST')return await createReader(request,env);
   const readerMatch=path.match(/^\/api\/readers\/([0-9a-f-]{36})(?:\/(door|passage))?$/i);
