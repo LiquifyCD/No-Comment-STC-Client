@@ -1,7 +1,7 @@
 const root=document.querySelector('#app'),toast=document.querySelector('#toast');
 const state={authenticated:false,csrfToken:'',passageEnabled:false,readers:[],activeReader:null,events:[],loading:true};
 
-async function api(path,init={}){const response=await fetch(path,{...init,headers:{'content-type':'application/json',...(state.csrfToken?{'x-csrf-token':state.csrfToken}:{}),...(init.headers||{})}});const data=await response.json();if(!response.ok)throw new Error(data.error||'Begäran misslyckades.');return data}
+async function api(path,init={}){const method=(init.method||'GET').toUpperCase();if(method!=='GET'&&path.startsWith('/api/readers')){const current=await fetch('/api/session',{cache:'no-store'}).then(response=>response.json());if(!current.authenticated)throw new Error('Sessionen har gått ut. Logga in igen.');state.csrfToken=current.csrfToken}const response=await fetch(path,{...init,headers:{'content-type':'application/json',...(state.csrfToken?{'x-csrf-token':state.csrfToken}:{}),...(init.headers||{})}});const data=await response.json();if(!response.ok)throw new Error(data.error||'Begäran misslyckades.');return data}
 function escapeHtml(value){return String(value).replace(/[&<>'"]/g,character=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]))}
 function formatDate(value){return value?new Intl.DateTimeFormat('sv-SE',{dateStyle:'medium',timeStyle:'short'}).format(new Date(value)):'Aldrig öppnad'}
 function showToast(message){toast.textContent=message;toast.classList.add('show');window.clearTimeout(showToast.timer);showToast.timer=window.setTimeout(()=>toast.classList.remove('show'),2600)}
