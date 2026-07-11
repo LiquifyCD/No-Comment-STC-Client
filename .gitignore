@@ -12,3 +12,5 @@ dist/
 *.mobileprovision
 .wrangler/
 .dev.vars
+__pycache__/
+*.py[cod]
