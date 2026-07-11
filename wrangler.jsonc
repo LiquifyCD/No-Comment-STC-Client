@@ -12,9 +12,8 @@
   "vars": {
     "BRP_BASE_URL": "https://stc.brpsystems.com/brponline/api/ver3",
     "BRP_APP_ID": "383",
-    "PASSAGE_ENABLED": "false",
-    "PASSAGE_CARD_READER": "1304"
+    "PASSAGE_ENABLED": "false"
   },
-  "secrets": { "required": ["SESSION_ENCRYPTION_KEY", "PASSAGE_AUTHORIZATION_ID"] },
+  "secrets": { "required": ["SESSION_ENCRYPTION_KEY", "PASSAGE_AUTHORIZATION_ID", "READER_CATALOG"] },
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }

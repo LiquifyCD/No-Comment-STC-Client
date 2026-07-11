@@ -45,6 +45,8 @@ The password is forwarded over HTTPS directly to BRP during login and is never s
 4. Derive the customer ID from that session and use only the server-configured reader.
 5. Keep the production passage POST disabled unless the authorization gate below is satisfied.
 
+Reader configuration and the authenticated door API are documented in [`docs/API.md`](docs/API.md).
+
 ## Passage authorization gate
 
 The committed and deployed configuration uses `PASSAGE_ENABLED=false` and an `UNAUTHORIZED` placeholder secret. Do not change it for production without written authorization. After authorization, record its reference as a Worker secret named `PASSAGE_AUTHORIZATION_ID` in the form `APPROVED-<reference>`, confirm the server-side `PASSAGE_CARD_READER` allowlist, and only then set `PASSAGE_ENABLED=true`.
