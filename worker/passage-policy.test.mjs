@@ -1,0 +1,13 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {validatePassageAttempt} from './passage-policy.mjs';
+const valid={originMatches:true,authenticatedCustomerId:'customer-example-001',body:{confirmed:true,requestId:'11111111-1111-4111-8111-111111111111'},enabled:true,authorizationId:'APPROVED-written-approval-reference',allowedReader:900001,replayed:false,recentAt:null,now:1_800_000_000_000};
+test('rejects anonymous users',()=>assert.equal(validatePassageAttempt({...valid,authenticatedCustomerId:null}).status,401));
+test('rejects mismatched customer IDs from clients',()=>assert.equal(validatePassageAttempt({...valid,body:{...valid.body,customerId:'other'}}).status,400));
+test('rejects arbitrary readers from clients',()=>assert.equal(validatePassageAttempt({...valid,body:{...valid.body,cardReader:9999}}).status,400));
+test('rejects replayed requests',()=>assert.equal(validatePassageAttempt({...valid,replayed:true}).status,409));
+test('rejects cross-origin requests',()=>assert.equal(validatePassageAttempt({...valid,originMatches:false}).status,403));
+test('rejects rate-limited requests',()=>assert.equal(validatePassageAttempt({...valid,recentAt:valid.now-1000}).status,429));
+test('rejects use without written authorization',()=>assert.equal(validatePassageAttempt({...valid,authorizationId:undefined}).status,503));
+test('rejects placeholder authorization values',()=>assert.equal(validatePassageAttempt({...valid,authorizationId:'UNAUTHORIZED'}).status,503));
+test('uses only server-derived customer and reader',()=>assert.deepEqual(validatePassageAttempt(valid),{ok:true,customerId:'customer-example-001',cardReader:900001,requestId:'11111111-1111-4111-8111-111111111111',auditTimestamp:'2027-01-15T08:00:00.000Z'}));
