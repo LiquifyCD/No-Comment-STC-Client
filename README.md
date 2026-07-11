@@ -40,6 +40,29 @@ The web password is forwarded over HTTPS directly to BRP during login and is nev
 
 Only `EXPO_PUBLIC_*` non-secret endpoint configuration belongs in `.env`. Never add usernames, passwords, cookies, or tokens to source control.
 
+## Python login and profile script
+
+[`scripts/brp_login.py`](scripts/brp_login.py) loads the BRP app configuration, authenticates against the BRP Systems API, keeps cookies in a `requests.Session`, and fetches the authenticated user's own customer profile. It prints profile field names but never prints access or refresh tokens.
+
+Install its only external dependency:
+
+```powershell
+py -m pip install -r requirements.txt
+```
+
+Prefer temporary environment variables for non-interactive use. The following PowerShell prompts avoid placing credential values in shell history or the repository:
+
+```powershell
+$env:BRP_USERNAME = Read-Host "BRP username"
+$securePassword = Read-Host "BRP password" -AsSecureString
+$env:BRP_PASSWORD = [Net.NetworkCredential]::new("", $securePassword).Password
+py scripts/brp_login.py
+Remove-Item Env:BRP_USERNAME, Env:BRP_PASSWORD
+$securePassword = $null
+```
+
+If the variables are absent, the script prompts for the username and reads the password without echoing it. Use it only with your own account or explicit authorization.
+
 ## Initial tasks
 
 - [ ] Verify the refresh endpoint/body from an authorized capture and add contract tests.
