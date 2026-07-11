@@ -6,10 +6,13 @@
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "directory": "./web", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
   "kv_namespaces": [{ "binding": "SESSIONS" }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "brp-personal-client", "database_id": "518a6ca8-317d-4f78-8e9f-5be4f42e6da6", "migrations_dir": "./migrations" }
+  ],
   "vars": {
     "BRP_BASE_URL": "https://stc.brpsystems.com/brponline/api/ver3",
     "BRP_APP_ID": "383",
-    "PASSAGE_ENABLED": "true",
+    "PASSAGE_ENABLED": "false",
     "PASSAGE_CARD_READER": "900001"
   },
   "secrets": { "required": ["SESSION_ENCRYPTION_KEY", "PASSAGE_AUTHORIZATION_ID"] },

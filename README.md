@@ -1,6 +1,14 @@
 # No-Comment STC Client
 
-Private, unofficial Expo/React Native client with a minimal, authorization-gated passage-test interface for **your own** STC/BRP account.
+Private, unofficial client for isolated reader workspaces for **your own** STC/BRP account. The hosted interface is an installable iPhone PWA backed by a Cloudflare Worker, encrypted KV sessions, and D1 persistence.
+
+## Reader workspaces
+
+- `/readers` lists the authenticated user's readers.
+- `/readers/new` validates a unique name and opens the reader automatically.
+- `/readers/:readerId` uses a permanent UUID and supports rename, confirmed deletion, and isolated audit history.
+- Every query is scoped by a server-derived owner ID; names are never authorization identifiers.
+- Existing users receive one `Standardläsare` during the one-time migration.
 
 ## Safety and scope
 
@@ -23,7 +31,9 @@ Private, unofficial Expo/React Native client with a minimal, authorization-gated
 
 1. Authenticate Wrangler: `npx wrangler login`.
 2. Create a 32-byte base64 key and store it only as the Worker secret `SESSION_ENCRYPTION_KEY`.
-3. Deploy with `npm run web:deploy`.
+3. Create the D1 database, apply `migrations/0001_readers.sql`, then deploy with `npm run web:deploy`.
+
+Install the deployed site using Safari's **Add to Home Screen**. The standalone app handles iPhone safe areas and never caches `/api/*` responses.
 
 The password is forwarded over HTTPS directly to BRP during login and is never stored or logged. The frontend receives session status and a CSRF token, never BRP credentials.
 
