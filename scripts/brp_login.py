@@ -7,7 +7,6 @@ from typing import Any
 
 import requests
 
-
 BASE_URL = "https://stc.brpsystems.com/brponline/api/ver3"
 APP_ID = 383
 
@@ -27,12 +26,10 @@ def request_json(
     **kwargs: Any,
 ) -> dict[str, Any]:
     response = session.request(method, url, timeout=20, **kwargs)
-
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
         print(f"Request failed: HTTP {response.status_code}", file=sys.stderr)
-
         # Avoid accidentally printing tokens or credentials.
         content_type = response.headers.get("content-type", "")
         if "application/json" in content_type:
@@ -41,24 +38,19 @@ def request_json(
                 print(f"Server response: {error_data}", file=sys.stderr)
             except ValueError:
                 pass
-
         raise RuntimeError("BRP API request failed") from exc
-
     try:
         data = response.json()
     except ValueError as exc:
         raise RuntimeError("Server did not return valid JSON") from exc
-
     if not isinstance(data, dict):
         raise RuntimeError("Unexpected response format")
-
     return data
 
 
 def main() -> None:
     username = os.getenv("BRP_USERNAME") or input("BRP username: ").strip()
     password = os.getenv("BRP_PASSWORD") or getpass.getpass("BRP password: ")
-
     if not username or not password:
         raise RuntimeError("Username and password are required")
 
@@ -71,10 +63,8 @@ def main() -> None:
             f"{BASE_URL}/apps/{APP_ID}"
             "?allowMultipleCompaniesAndBusinessUnits=true"
         )
-
         config_response = session.get(app_config_url, timeout=20)
         config_response.raise_for_status()
-
         print("App configuration loaded.")
         print("Session cookies:", list(session.cookies.keys()))
 
@@ -88,7 +78,6 @@ def main() -> None:
                 "password": password,
             },
         )
-
         access_token = login_data.get("access_token")
         refresh_token = login_data.get("refresh_token")
         customer_id = str(login_data.get("username", username))
@@ -98,7 +87,6 @@ def main() -> None:
             raise RuntimeError("Login succeeded but no access token was returned")
 
         session.headers["Authorization"] = f"Bearer {access_token}"
-
         print("Login successful.")
         print(f"Customer ID: {customer_id}")
         print(f"Token expires in: {expires_in} seconds")
@@ -111,10 +99,28 @@ def main() -> None:
             "GET",
             f"{BASE_URL}/customers/{customer_id}",
         )
-
         print("\nCustomer profile returned successfully.")
         print("Available fields:")
         for key in sorted(customer.keys()):
+            print(f"  - {key}")
+
+        # Post a passage try (e.g. gym turnstile / card reader entry).
+        # Session cookies and the Authorization header set above are reused
+        # automatically for this request.
+        passagetry_payload: dict[str, Any] = {
+            "cardReader": 900001,
+            "printTicket": True,
+        }
+
+        passagetry_result = request_json(
+            session,
+            "POST",
+            f"{BASE_URL}/customers/{customer_id}/passagetries",
+            json=passagetry_payload,
+        )
+        print("\nPassage try posted successfully.")
+        print("Response fields:")
+        for key in sorted(passagetry_result.keys()):
             print(f"  - {key}")
 
 
