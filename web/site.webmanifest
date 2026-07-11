@@ -1,9 +1,9 @@
 {
   "id": "/",
-  "name": "BRP Readers",
-  "short_name": "Readers",
-  "description": "Secure reader workspace management for No-Comment STC Client.",
-  "start_url": "/readers",
+  "name": "No-Comment STC Client",
+  "short_name": "Open",
+  "description": "Minimal authorized BRP door client.",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
