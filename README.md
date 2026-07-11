@@ -28,6 +28,8 @@ Includes a Cloudflare Worker web deployment. The browser never receives BRP acce
 
 The web password is forwarded over HTTPS directly to BRP during login and is never stored or logged. BRP tokens and its affinity cookie are AES-GCM encrypted before being stored in KV. The frontend can only call the same-origin read-only profile route.
 
+After login, **Kör profilskript** runs the Python script's equivalent read-only flow inside the Worker. It reuses the encrypted server-side bearer token and affinity cookie, reloads app configuration and the authenticated user's profile, and returns only sanitized status text and profile field names. Tokens are never sent to browser JavaScript.
+
 ## Authentication flow
 
 1. Load `/apps/{appId}` to establish the backend session/cookie.
