@@ -1,4 +1,22 @@
-<!doctype html><html lang="sv"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Passage Test</title><link rel="stylesheet" href="/style.css"></head><body><main>
-<section id="login" class="card"><p class="eyebrow">BRP Personal Client</p><h1>Logga in</h1><p>Autentisera ditt eget konto. Inloggningsuppgifter sparas aldrig.</p><form id="login-form"><label>Användarnamn<input name="username" autocomplete="username" required></label><label>Lösenord<input name="password" type="password" autocomplete="current-password" required></label><p class="error" role="alert"></p><button>Logga in</button></form></section>
-<section id="passage" class="card hidden"><header><div><p class="eyebrow">Passage Test</p><h1>Passageförsök</h1></div><button id="logout" class="secondary">Logga ut</button></header><div id="session-status" class="status"></div><p id="availability" class="notice"></p><form id="passage-form"><label class="confirm"><input name="confirmed" type="checkbox" required><span>Jag bekräftar ett passageförsök för mitt autentiserade konto vid den serverkonfigurerade kortläsaren.</span></label><p class="error" role="alert"></p><button id="send-passage" disabled>Skicka passageförsök</button></form><div id="result" class="result hidden" aria-live="polite"></div></section>
-</main><script src="/app.js" defer></script></body></html>
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#07080d">
+  <meta name="referrer" content="no-referrer">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="BRP Readers">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>BRP Readers</title>
+  <link rel="manifest" href="/site.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app" aria-live="polite"></div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
