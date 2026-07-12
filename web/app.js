@@ -12,7 +12,7 @@ function escapeHtml(value){return String(value).replace(/[&<>'"]/g,char=>({'&':'
 function setResult(message,type=''){const result=document.querySelector('#result');if(!result)return;result.textContent=message;result.className=`result ${type}`}
 
 function loginView(){
-  return `<form id="login-view" class="panel">
+  return `<form id="login-view" class="panel form-panel">
     <label>Email<input name="username" type="email" autocomplete="username" required></label>
     <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
     <button class="primary" type="submit">Log in</button>
@@ -23,30 +23,31 @@ function loginView(){
 function appView(){
   const readerOpts=readers.map(reader=>`<option value="${escapeHtml(reader.id)}" ${reader.id===selectedReader?'selected':''}>${escapeHtml(reader.name)}</option>`).join('');
   const errorLine=loadError?`<p class="result error">${escapeHtml(loadError)}</p>`:'';
-  if(activeTab==='open')return `${errorLine}<form id="open-view" class="panel">
+  if(activeTab==='open')return `${errorLine}<form id="open-view" class="panel form-panel">
     <label>Reader<select id="reader" required><option value="">Choose reader</option>${readerOpts}</select></label>
-    <button class="primary" type="submit" ${session.passageEnabled?'':'disabled'}>Open</button>
-    <button id="delete" class="danger" type="button" ${selectedReader?'':'disabled'}>Delete door</button>
+    <div class="action-grid"><button class="primary" type="submit" ${session.passageEnabled?'':'disabled'}>Open</button>
+    <button id="delete" class="danger" type="button" ${selectedReader?'':'disabled'}>Delete door</button></div>
     <p id="result" class="result" role="status" aria-live="polite">${session.passageEnabled?'':'Door opening is currently disabled.'}</p>
   </form>`;
-  return `${errorLine}<form id="create-view" class="panel">
-    <label>Name<input name="name" value="Main entrance" maxlength="40" autocomplete="off" required></label>
+  return `${errorLine}<form id="create-view" class="panel form-panel">
+    <div class="field-grid"><label class="full-field">Name<input name="name" value="Main entrance" maxlength="40" autocomplete="off" required></label>
     <label>Major<input name="major" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>
-    <label>Minor<input name="minor" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>
+    <label>Minor<input name="minor" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label></div>
     <button class="primary" type="submit">Save</button>
     <p id="result" class="result" role="status" aria-live="polite"></p>
   </form>`;
 }
 
 function view(){
-  if(!session){app.innerHTML=`<main class="app-shell"><section class="content">${loginView()}</section></main>`;return}
-  app.innerHTML=`<main class="app-shell"><section class="content">
-    <div class="session-bar"><span>Signed in</span><button type="button" id="logout" class="link">Log out</button></div>
-    ${appView()}</section>
-    <nav class="tab-bar" aria-label="Main navigation">
+  const brand=`<div class="brand"><img src="/icon.svg" alt="" width="34" height="34"><span>BRP Open</span></div>`;
+  if(!session){app.innerHTML=`<main class="app-shell signed-out"><header class="app-header">${brand}</header><section class="content login-content"><div class="page-wrap login-wrap"><div class="page-heading"><span class="eyebrow">Welcome</span><h1>Sign in</h1><p>Use your account to manage and open saved doors.</p></div>${loginView()}</div></section></main>`;return}
+  const title=activeTab==='open'?'Open a door':'Create a door',description=activeTab==='open'?'Choose one of your saved doors.':'Save a custom location and door code.';
+  app.innerHTML=`<main class="app-shell authenticated"><header class="app-header">${brand}
+    <div class="session-bar"><span><i aria-hidden="true"></i>Signed in</span><button type="button" id="logout" class="link">Log out</button></div></header>
+    <div class="app-body"><nav class="app-nav" aria-label="Main navigation">
       <button type="button" data-tab="open" class="tab ${activeTab==='open'?'active':''}" ${activeTab==='open'?'aria-current="page"':''}>Open</button>
       <button type="button" data-tab="create" class="tab ${activeTab==='create'?'active':''}" ${activeTab==='create'?'aria-current="page"':''}>Create</button>
-    </nav></main>
+    </nav><section class="content"><div class="page-wrap"><div class="page-heading"><span class="eyebrow">Doors</span><h1>${title}</h1><p>${description}</p></div>${appView()}</div></section></div></main>
     <dialog id="delete-dialog"><form method="dialog" id="delete-form">
       <h2>Delete door?</h2><p class="delete-name"></p>
       <p class="delete-error" role="alert"></p>
