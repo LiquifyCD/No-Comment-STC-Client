@@ -8,7 +8,7 @@ The PWA has two tabs: **Open** and **Create**. Create accepts only a custom name
 
 Open the site in Safari and choose **Share → Add to Home Screen**. Launch **BRP Open** from the Home Screen for standalone mode without Safari controls. A normal Safari tab or bookmark retains Safari’s address bar.
 
-The adaptive layout uses a compact top account header and bottom navigation on phones, horizontal navigation on tablets, and a full desktop header/sidebar workspace on larger screens. It is verified from small mobile and iPhone 13 sizes through laptop, 1080p, and 1440p displays.
+The adaptive layout uses a compact top account header and bottom navigation on phones, horizontal navigation on tablets, and a fluid desktop workspace up to 1800px wide. Desktop content expands to 1280px while the existing phone layout remains unchanged.
 
 ## Security
 
@@ -22,7 +22,7 @@ The adaptive layout uses a compact top account header and bottom navigation on p
 
 ## API
 
-See [`docs/API.md`](docs/API.md) for the session, reader, passage, and deletion contracts used by the web app.
+See [`docs/API.md`](docs/API.md) for the web-session contracts and the API-key-protected one-request `POST /api/open-door` integration.
 
 ## Branding
 
@@ -44,7 +44,7 @@ Tests use mocked or local-only data and never contact a real BRP/STC endpoint or
 
 ## Deployment
 
-Set `SESSION_ENCRYPTION_KEY`, `PASSAGE_AUTHORIZATION_ID`, and `READER_CATALOG` as Worker secrets. Preserve the deployment’s existing enabled settings unless a separate change explicitly authorizes modifying them.
+Set `SESSION_ENCRYPTION_KEY`, `PASSAGE_AUTHORIZATION_ID`, `READER_CATALOG`, and `OPEN_DOOR_API_KEY` as Worker secrets. Preserve the deployment’s existing enabled settings unless a separate change explicitly authorizes modifying them.
 
 ## License
 

@@ -7,8 +7,9 @@ import { runOpenDoorFlow } from './open-door-flow.mjs';
 import { runCreateReaderFlow } from './create-reader-flow.mjs';
 import { encryptJson, decryptJson } from './secret-box.mjs';
 import { saveConfiguredReader } from './configured-reader-store.mjs';
-import { acquirePassageCooldown, PASSAGE_COOLDOWN_MS } from './passage-cooldown.mjs';
+import { acquirePassageCooldown } from './passage-cooldown.mjs';
 import { deleteOwnedReader, validateReaderDeletion } from './reader-deletion.mjs';
+import { validateExternalOpenRequest } from './external-api-policy.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type ActiveSession = { id:string; data:Session };
@@ -78,17 +79,20 @@ async function createConfiguredReader(request:Request,env:Env) {
  return response({reader:{id:savedId,name:result.name}},201);
 }
 async function openDoor(request:Request,env:Env) {
- const origin=request.headers.get('origin'); if(origin&&origin!==new URL(request.url).origin)return errorResponse('Forbidden.',403);
+ const url=new URL(request.url),clientKey=await ownerId(`open:${request.headers.get('cf-connecting-ip')??'unknown'}`,env.SESSION_ENCRYPTION_KEY),rateKey=`open-rate:${clientKey}`,now=Date.now(),recentRaw=await env.SESSIONS.get(rateKey);
+ const access=validateExternalOpenRequest({protocol:url.protocol,origin:request.headers.get('origin'),expectedOrigin:url.origin,apiKey:request.headers.get('x-api-key')??'',expectedApiKey:env.OPEN_DOOR_API_KEY,recentAt:recentRaw?Number(recentRaw):null,now});if(!access.ok)return errorResponse(access.error,access.status);
  const length=Number(request.headers.get('content-length')??0); if(length>2048)return errorResponse('Invalid request.',413);
  let body:unknown; try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}
  if(!passageEnabled(env.PASSAGE_ENABLED)||!env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-'))return errorResponse('Door opening is disabled.',503);
- const clientKey=await ownerId(`open:${request.headers.get('cf-connecting-ip')??'unknown'}`,env.SESSION_ENCRYPTION_KEY);
- const rateKey=`open-rate:${clientKey}`,now=Date.now(),recentRaw=await env.SESSIONS.get(rateKey); if(recentRaw&&now-Number(recentRaw)<PASSAGE_COOLDOWN_MS)return errorResponse('Try again in 2 seconds.',429);
  await env.SESSIONS.put(rateKey,String(now),{expirationTtl:60});
- const resolveReader=async(customerId:string,readerId:string)=>{const owner=await ownerId(customerId,env.SESSION_ENCRYPTION_KEY);const row=await env.DB.prepare('SELECT config_ciphertext FROM readers WHERE id=? AND owner_id=? AND config_ciphertext IS NOT NULL').bind(readerId,owner).first<{config_ciphertext:string}>();if(!row)return null;const config=await decryptJson<{major:string;minor:string}>(row.config_ciphertext,env.SESSION_ENCRYPTION_KEY);return typeof config.major==='string'&&typeof config.minor==='string'?config:null};
- const result=await runOpenDoorFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body,resolveReader,enabled:true,authorizationId:env.PASSAGE_AUTHORIZATION_ID});
+ const resolveReaderByName=async(customerId:string,nameKey:string)=>{const owner=await ownerId(customerId,env.SESSION_ENCRYPTION_KEY);const rows=await env.DB.prepare('SELECT id,config_ciphertext FROM readers WHERE owner_id=? AND name_key=? AND config_ciphertext IS NOT NULL LIMIT 2').bind(owner,nameKey).all<{id:string;config_ciphertext:string}>();if(rows.results.length>1)return {ambiguous:true as const};const row=rows.results[0];if(!row)return null;const config=await decryptJson<{major:string;minor:string}>(row.config_ciphertext,env.SESSION_ENCRYPTION_KEY);return typeof config.major==='string'&&typeof config.minor==='string'?{id:row.id,...config}:null};
+ const beforeOpen=async(customerId:string,readerId:string)=>acquirePassageCooldown({db:env.DB,owner:await ownerId(customerId,env.SESSION_ENCRYPTION_KEY),readerId,now:Date.now()});
+ const result=await runOpenDoorFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body,resolveReaderByName,beforeOpen,enabled:true,authorizationId:env.PASSAGE_AUTHORIZATION_ID});
  console.log(JSON.stringify({event:'open_door_result',status:result.status,ok:result.ok}));
- return result.ok?response({ok:true},200):errorResponse(result.error,result.status);
+ if(!result.ok)return errorResponse(result.error,result.status);
+ const timestamp=new Date().toISOString(),auditId=crypto.randomUUID(),owner=await ownerId(result.customerId,env.SESSION_ENCRYPTION_KEY);
+ await env.DB.prepare('INSERT INTO reader_events(id,reader_id,owner_id,event_type,data_json,created_at) VALUES(?,?,?,?,?,?)').bind(auditId,result.readerId,owner,'api_passage',JSON.stringify({outcome:'accepted'}),timestamp).run();
+ return response({ok:true,message:'Door request accepted.',timestamp},200);
 }
 async function createReader(request:Request,env:Env) {
  const auth=await requireSession(request,env); if('error'in auth)return auth.error;

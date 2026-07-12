@@ -8,6 +8,58 @@ https://brp-personal-client.liquifycd.workers.dev
 
 The web app uses same-origin session cookies. Mutating session routes require the `x-csrf-token` returned by `GET /api/session`. Responses never expose credentials, tokens, cookies, customer IDs, `major`, `minor`, or resolved reader codes.
 
+## One-request API
+
+`POST /api/open-door` is for an authorized personal client on another device. It requires HTTPS and the independent `OPEN_DOOR_API_KEY` Worker secret in `x-api-key`.
+
+```http
+POST /api/open-door
+x-api-key: your-separate-api-key
+Content-Type: application/json
+
+{"email":"user@example.com","password":"your-password","doorName":"Main entrance"}
+```
+
+The Worker authenticates directly with BRP, derives the customer ID from that response, and resolves the normalized `doorName` only against encrypted doors saved for that owner. Unknown, ambiguous, or unauthorized names are rejected. Credentials, cookies, and tokens exist only during the Worker request and are never stored or returned. Success contains only:
+
+```json
+{"ok":true,"message":"Door request accepted.","timestamp":"2026-07-13T12:00:00.000Z"}
+```
+
+Configure the API key interactively and never commit it:
+
+```powershell
+npx wrangler secret put OPEN_DOOR_API_KEY
+```
+
+PowerShell example. The password is requested without echo and is not placed in shell history:
+
+```powershell
+$base = "https://brp-personal-client.liquifycd.workers.dev"
+$email = Read-Host "BRP email"
+$door = Read-Host "Saved door name"
+$securePassword = Read-Host "BRP password" -AsSecureString
+$credential = [pscredential]::new($email, $securePassword)
+$body = @{ email = $email; password = $credential.GetNetworkCredential().Password; doorName = $door } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$base/api/open-door" -Headers @{ "x-api-key" = $env:OPEN_DOOR_API_KEY } -ContentType "application/json" -Body $body
+$body = $null
+```
+
+Load `OPEN_DOOR_API_KEY` through the device's secure secret storage before running the example. Do not type passwords or API keys directly into commands because arguments and shell history may be readable by other software.
+
+Minimal curl example for systems where values are supplied by secure environment/secret storage:
+
+```bash
+jq -n --arg email "$BRP_EMAIL" --arg password "$BRP_PASSWORD" --arg doorName "$BRP_DOOR_NAME" '{email:$email,password:$password,doorName:$doorName}' |
+  curl --fail-with-body --silent --show-error \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: $OPEN_DOOR_API_KEY" \
+    --data-binary @- \
+    "https://brp-personal-client.liquifycd.workers.dev/api/open-door"
+```
+
+The endpoint applies an IP pre-authentication limit and the same atomic two-second owner/door cooldown as the web app. Requests with a foreign browser `Origin`, invalid API key, invalid credentials, or an unowned door are rejected.
+
 ## Login and session
 
 ```http
