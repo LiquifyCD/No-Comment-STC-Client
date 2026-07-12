@@ -2,7 +2,11 @@
 
 Private, unofficial minimal door client for an authorized STC/BRP account.
 
-The iPhone-ready PWA contains a reader selector, **Create reader**, and **Open**. A reader is configured once with its location (`major`) and door (`minor`) codes; those values are encrypted server-side and resolved through BRP immediately before opening.
+The iPhone-ready PWA has two minimal tabs: **Open** and **Create**. New reader names default to **Main entrance**. A reader is configured once with its location (`major`) and door (`minor`) codes; those values are encrypted server-side and resolved through BRP immediately before opening.
+
+## Install on iPhone
+
+Open the site in Safari, then choose **Share → Add to Home Screen**. Launch the saved Home Screen app to use standalone mode without Safari's address/search bar. A normal Safari tab always keeps Safari's controls.
 
 ## Security
 
