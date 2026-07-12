@@ -2,13 +2,13 @@
 
 Private, unofficial minimal door client for an authorized STC/BRP account.
 
-The iPhone-ready PWA contains only a server-configured reader selector and an **Open** button. Credentials are requested in a modal, sent over HTTPS to the Worker, used for one in-memory BRP login and door request, then discarded.
+The iPhone-ready PWA contains a reader selector, **Create reader**, and **Open**. A reader is configured once with its location (`major`) and door (`minor`) codes; those values are encrypted server-side and resolved through BRP immediately before opening.
 
 ## Security
 
 - Email, password, bearer token, refresh token, upstream cookies, customer ID, and numeric reader code are never stored, cached, logged, or returned.
-- Numeric reader codes exist only in the Cloudflare `READER_CATALOG` secret.
-- Arbitrary reader codes and aliases are rejected.
+- Stored `major` and `minor` values are encrypted and never returned to the browser.
+- The card-reader ID is derived from BRP's passage-reader lookup and never accepted from the client.
 - Cross-origin browser requests, oversized payloads, and rapid repeated attempts are rejected.
 - `PASSAGE_ENABLED=false` is the committed safe default.
 

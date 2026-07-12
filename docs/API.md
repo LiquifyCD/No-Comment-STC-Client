@@ -1,4 +1,4 @@
-# Open door API
+# Passage-reader lookup API
 
 Base URL:
 
@@ -6,78 +6,74 @@ Base URL:
 https://brp-personal-client.liquifycd.workers.dev
 ```
 
-Endpoint:
+## Create a reader
+
+```http
+POST /api/configured-readers
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "Front door",
+  "major": "1234",
+  "minor": "567890",
+  "email": "user@example.com",
+  "password": "your-password"
+}
+```
+
+The credentials authenticate ownership and are discarded immediately. `major` and `minor` are encrypted before being stored. The API returns only the permanent reader UUID and display name:
+
+```json
+{
+  "reader": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "name": "Front door"
+  }
+}
+```
+
+`GET /api/configured-readers` returns only configured reader UUIDs and names for the selector. It never returns `major`, `minor`, or a resolved card-reader ID.
+
+## Open a door
 
 ```http
 POST /api/open-door
 Content-Type: application/json
 ```
 
-Body:
-
 ```json
 {
   "email": "user@example.com",
   "password": "your-password",
-  "reader": "configured-reader-alias"
+  "reader": "11111111-1111-4111-8111-111111111111"
 }
 ```
 
-The Worker validates the reader alias against the encrypted `READER_CATALOG`, performs the BRP login in memory, and immediately sends the door request. It never stores, caches, returns, or logs the email, password, bearer token, refresh token, upstream cookie, customer ID, or numeric reader code.
+The Worker:
 
-Successful response:
+1. Authenticates through BRP in memory.
+2. Verifies that the reader UUID belongs to the authenticated customer.
+3. Decrypts its stored `major` and `minor`.
+4. Calls `GET /passagereaders?major={major}&minor={minor}`.
+5. Validates the lookup response and uses its server-derived `id` for the passage request.
+6. Discards credentials, tokens, cookies, customer ID, lookup values, and the resolved reader ID.
+
+Success:
 
 ```json
 { "ok": true }
 ```
 
-Error response:
+Error:
 
 ```json
-{ "error": "Invalid credentials." }
+{ "error": "Reader not found." }
 ```
 
-Possible statuses include `200`, `400`, `401`, `403`, `413`, `429`, `502`, and `503`.
-
-Example:
-
-```js
-const response = await fetch(
-  "https://brp-personal-client.liquifycd.workers.dev/api/open-door",
-  {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: "user@example.com",
-      password: "your-password",
-      reader: "main-entrance"
-    })
-  }
-);
-
-console.log(response.status, await response.json());
-```
-
-For browser requests, the Worker accepts the deployed site's own origin. Direct API clients should omit the `Origin` header. Cross-origin browser requests are rejected.
-
-## Reader aliases
-
-Reader codes remain in the Cloudflare secret `READER_CATALOG`. Configure it with:
-
-```powershell
-npx wrangler secret put READER_CATALOG
-```
-
-Example secret value:
-
-```json
-{
-  "main-entrance": { "label": "Main entrance", "code": 1234 }
-}
-```
-
-Only the alias and label are exposed through `GET /api/reader-options`; the numeric code stays server-side.
+The endpoint rejects client-supplied `major`, `minor`, `cardReader`, customer IDs, tokens, and cookies. Browser calls must be same-origin; direct API clients omit the `Origin` header.
 
 ## Safe testing
 
-Tests inject a mock fetch function and use only `mock.invalid`. They never reference or contact the real BRP/STC host or a real reader. Keep `PASSAGE_ENABLED=false` during development and testing.
+All tests inject `mock.invalid` responses for configuration, login, passage-reader lookup, and passage creation. Tests never reference or contact the real BRP/STC hostname or a real reader. Keep `PASSAGE_ENABLED=false` during development and testing.
