@@ -1,12 +1,14 @@
 import { validatePassageAttempt } from './passage-policy.mjs';
 import { validateReaderName } from './reader-model.mjs';
-import { parseReaderCatalog, publicReaderOptions } from './reader-catalog.mjs';
+import { parseReaderCatalog } from './reader-catalog.mjs';
 import { sendDoorRequest, lookupPassageReader } from './door-service.mjs';
 import { validateReaderCreation } from './reader-request.mjs';
 import { runOpenDoorFlow } from './open-door-flow.mjs';
 import { runCreateReaderFlow } from './create-reader-flow.mjs';
 import { encryptJson, decryptJson } from './secret-box.mjs';
 import { saveConfiguredReader } from './configured-reader-store.mjs';
+import { acquirePassageCooldown, PASSAGE_COOLDOWN_MS } from './passage-cooldown.mjs';
+import { deleteOwnedReader, validateReaderDeletion } from './reader-deletion.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type ActiveSession = { id:string; data:Session };
@@ -63,7 +65,6 @@ async function login(request:Request,env:Env) {
 
 async function sessionStatus(request:Request,env:Env) { const active=await getSession(request,env); if(!active)return response({authenticated:false}); return response({authenticated:true,expiresAt:new Date(active.data.expiresAt).toISOString(),csrfToken:await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY),passageEnabled:passageEnabled(env.PASSAGE_ENABLED)&&env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-')}); }
 async function listReaders(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; await ensureDefaultReader(env,auth.owner); const rows=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE owner_id=? ORDER BY COALESCE(last_opened_at,created_at) DESC').bind(auth.owner).all<ReaderRow>(); return response({readers:rows.results.map(serializeReader)}); }
-async function listReaderOptions(env:Env) { const catalog=readerCatalog(env); if(!catalog.ok)return errorResponse(catalog.error,503); return response({options:publicReaderOptions(catalog)}); }
 async function listConfiguredReaders(env:Env) { const rows=await env.DB.prepare('SELECT id,name FROM readers WHERE config_ciphertext IS NOT NULL ORDER BY created_at DESC').all<{id:string;name:string}>(); return response({readers:rows.results}); }
 async function createConfiguredReader(request:Request,env:Env) {
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return errorResponse('Forbidden.',403);
@@ -82,8 +83,8 @@ async function openDoor(request:Request,env:Env) {
  let body:unknown; try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}
  if(!passageEnabled(env.PASSAGE_ENABLED)||!env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-'))return errorResponse('Door opening is disabled.',503);
  const clientKey=await ownerId(`open:${request.headers.get('cf-connecting-ip')??'unknown'}`,env.SESSION_ENCRYPTION_KEY);
- const rateKey=`open-rate:${clientKey}`; if(await env.SESSIONS.get(rateKey))return errorResponse('Try again later.',429);
- await env.SESSIONS.put(rateKey,'1',{expirationTtl:30});
+ const rateKey=`open-rate:${clientKey}`,now=Date.now(),recentRaw=await env.SESSIONS.get(rateKey); if(recentRaw&&now-Number(recentRaw)<PASSAGE_COOLDOWN_MS)return errorResponse('Try again in 2 seconds.',429);
+ await env.SESSIONS.put(rateKey,String(now),{expirationTtl:60});
  const resolveReader=async(customerId:string,readerId:string)=>{const owner=await ownerId(customerId,env.SESSION_ENCRYPTION_KEY);const row=await env.DB.prepare('SELECT config_ciphertext FROM readers WHERE id=? AND owner_id=? AND config_ciphertext IS NOT NULL').bind(readerId,owner).first<{config_ciphertext:string}>();if(!row)return null;const config=await decryptJson<{major:string;minor:string}>(row.config_ciphertext,env.SESSION_ENCRYPTION_KEY);return typeof config.major==='string'&&typeof config.minor==='string'?config:null};
  const result=await runOpenDoorFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body,resolveReader,enabled:true,authorizationId:env.PASSAGE_AUTHORIZATION_ID});
  console.log(JSON.stringify({event:'open_door_result',status:result.status,ok:result.ok}));
@@ -93,22 +94,26 @@ async function createReader(request:Request,env:Env) {
  const auth=await requireSession(request,env); if('error'in auth)return auth.error;
  const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid;
  const body=await request.json() as unknown;
- const valid=validateReaderCreation(body,readerCatalog(env));
+ const valid=validateReaderCreation(body);
  if(!valid.ok)return errorResponse(valid.error,valid.status);
  const id=crypto.randomUUID(),now=new Date().toISOString();
- try{
-  if(valid.mode==='beacon'){
-   const ciphertext=await encryptJson({major:valid.major,minor:valid.minor},env.SESSION_ENCRYPTION_KEY);
-   await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at,config_ciphertext) VALUES(?,?,?,?,0,?,?,?)').bind(id,auth.owner,valid.name,valid.nameKey,now,now,ciphertext).run();
-  }else{
-   await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at) VALUES(?,?,?,?,?,?,?)').bind(id,auth.owner,valid.name,valid.nameKey,valid.cardReader,now,now).run();
-  }
- }catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error}
- return response({reader:{id,name:valid.name,createdAt:now,lastOpenedAt:now}},201);
+ const ciphertext=await encryptJson({major:valid.major,minor:valid.minor},env.SESSION_ENCRYPTION_KEY);
+ const savedId=await saveConfiguredReader({db:env.DB,id,owner:auth.owner,name:valid.name,nameKey:valid.nameKey,now,ciphertext});
+ if(!savedId)return errorResponse('En läsare med samma namn finns redan.',409);
+ return response({reader:{id:savedId,name:valid.name,createdAt:now,lastOpenedAt:now}},201);
 }
 async function getReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const row=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).first<ReaderRow>(); if(!row)return errorResponse('Läsaren hittades inte.',404); const now=new Date().toISOString(); await env.DB.prepare('UPDATE readers SET last_opened_at=? WHERE id=? AND owner_id=?').bind(now,readerId,auth.owner).run(); const events=await env.DB.prepare('SELECT id,event_type,data_json,created_at FROM reader_events WHERE reader_id=? AND owner_id=? ORDER BY created_at DESC LIMIT 20').bind(readerId,auth.owner).all<{id:string;event_type:string;data_json:string;created_at:string}>(); return response({reader:{...serializeReader(row),lastOpenedAt:now},events:events.results.map(event=>({id:event.id,type:event.event_type,data:JSON.parse(event.data_json),createdAt:event.created_at}))}); }
 async function renameReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as {name?:unknown}; const valid=validateReaderName(body.name); if(!valid.ok)return errorResponse(valid.error,400); try{const result=await env.DB.prepare('UPDATE readers SET name=?,name_key=? WHERE id=? AND owner_id=?').bind(valid.name,valid.nameKey,readerId,auth.owner).run(); if(!result.meta.changes)return errorResponse('Läsaren hittades inte.',404)}catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error} return response({reader:{id:readerId,name:valid.name}}); }
-async function deleteReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as {confirmed?:boolean}; if(body.confirmed!==true)return errorResponse('Borttagningen måste bekräftas.',400); const result=await env.DB.prepare('DELETE FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).run(); if(!result.meta.changes)return errorResponse('Läsaren hittades inte.',404); return response({deleted:true}); }
+async function deleteReader(request:Request,env:Env,readerId:string) {
+ const active=await getSession(request,env),originMatches=sameOrigin(request);
+ let csrfValid=false;
+ if(active){const token=request.headers.get('x-csrf-token')??'',expected=await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY);csrfValid=Boolean(token&&safeEqual(token,expected))}
+ const access=validateReaderDeletion({authenticated:Boolean(active),originMatches,csrfValid,confirmed:true});if(!access.ok)return errorResponse(access.error,access.status);
+ let body:{confirmed?:unknown};try{body=await request.json() as {confirmed?:unknown}}catch{return errorResponse('Ogiltig begäran.',400)}
+ const confirmed=validateReaderDeletion({authenticated:true,originMatches:true,csrfValid:true,confirmed:body.confirmed});if(!confirmed.ok)return errorResponse(confirmed.error,confirmed.status);
+ const owner=await ownerId(active!.data.customerId,env.SESSION_ENCRYPTION_KEY),deleted=await deleteOwnedReader({db:env.DB,owner,readerId});
+ return deleted?response({deleted:true}):errorResponse('Läsaren hittades inte.',404);
+}
 async function passage(request:Request,env:Env,readerId:string) {
  const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid;
  const reader=await env.DB.prepare('SELECT id,name,card_reader,config_ciphertext,created_at,last_opened_at FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).first<ReaderRow&{config_ciphertext:string|null}>(); if(!reader)return errorResponse('Läsaren hittades inte.',404);
@@ -121,9 +126,10 @@ async function passage(request:Request,env:Env,readerId:string) {
   allowedReader=lookup.cardReader;
  }
  let body:Record<string,unknown>|null=null; try{body=await request.json() as Record<string,unknown>}catch{return errorResponse('Ogiltig JSON.',400)}
- const requestId=typeof body.requestId==='string'?body.requestId:''; const replayed=Boolean(requestId&&await env.SESSIONS.get(`replay:${auth.active.id}:${readerId}:${requestId}`)); const recentRaw=await env.SESSIONS.get(`rate:${auth.active.id}:${readerId}`);
- const result=validatePassageAttempt({originMatches:true,authenticatedCustomerId:auth.active.data.customerId,body,enabled:passageEnabled(env.PASSAGE_ENABLED),authorizationId:env.PASSAGE_AUTHORIZATION_ID,allowedReader,replayed,recentAt:recentRaw?Number(recentRaw):null,now:Date.now()}); if(!result.ok)return errorResponse(result.error,result.status);
- await env.SESSIONS.put(`replay:${auth.active.id}:${readerId}:${result.requestId}`,result.auditTimestamp,{expirationTtl:300}); await env.SESSIONS.put(`rate:${auth.active.id}:${readerId}`,String(Date.now()),{expirationTtl:60});
+ const requestId=typeof body.requestId==='string'?body.requestId:''; const replayed=Boolean(requestId&&await env.SESSIONS.get(`replay:${auth.active.id}:${readerId}:${requestId}`)); const recentRaw=await env.SESSIONS.get(`rate:${auth.owner}:${readerId}`),now=Date.now();
+ const result=validatePassageAttempt({originMatches:true,authenticatedCustomerId:auth.active.data.customerId,body,enabled:passageEnabled(env.PASSAGE_ENABLED),authorizationId:env.PASSAGE_AUTHORIZATION_ID,allowedReader,replayed,recentAt:recentRaw?Number(recentRaw):null,now}); if(!result.ok)return errorResponse(result.error,result.status);
+ if(!await acquirePassageCooldown({db:env.DB,owner:auth.owner,readerId,now}))return errorResponse('Vänta 2 sekunder innan nästa försök.',429);
+ await env.SESSIONS.put(`replay:${auth.active.id}:${readerId}:${result.requestId}`,result.auditTimestamp,{expirationTtl:300}); await env.SESSIONS.put(`rate:${auth.owner}:${readerId}`,String(now),{expirationTtl:60});
  const auditId=crypto.randomUUID(); const upstream=await sendDoorRequest({fetcher:fetch,baseUrl:env.BRP_BASE_URL,customerId:result.customerId,cardReader:result.cardReader,accessToken:auth.active.data.accessToken,cookie:auth.active.data.upstreamCookie}); const outcome=upstream.ok?'accepted':'rejected';
  await env.DB.prepare('INSERT INTO reader_events(id,reader_id,owner_id,event_type,data_json,created_at) VALUES(?,?,?,?,?,?)').bind(auditId,readerId,auth.owner,'passage',JSON.stringify({outcome,status:upstream.status}),result.auditTimestamp).run(); console.log(JSON.stringify({event:'passage_attempt',auditId,readerId,timestamp:result.auditTimestamp,outcome,status:upstream.status}));
  if(!upstream.ok)return response({error:'Passageförsöket avvisades.',auditId,timestamp:result.auditTimestamp},upstream.status===401?401:502); return response({ok:true,auditId,timestamp:result.auditTimestamp,message:'Passageförsöket skickades.'});
@@ -138,7 +144,6 @@ export default { async fetch(request:Request,env:Env):Promise<Response> {
   if(path==='/api/configured-readers'&&request.method==='GET')return await listConfiguredReaders(env);
   if(path==='/api/configured-readers'&&request.method==='POST')return await createConfiguredReader(request,env);
   if(path==='/api/session'&&request.method==='GET')return await sessionStatus(request,env);
-  if(path==='/api/reader-options'&&request.method==='GET')return await listReaderOptions(env);
   if(path==='/api/readers'&&request.method==='GET')return await listReaders(request,env);
   if(path==='/api/readers'&&request.method==='POST')return await createReader(request,env);
   const readerMatch=path.match(/^\/api\/readers\/([0-9a-f-]{36})(?:\/(door|passage))?$/i);

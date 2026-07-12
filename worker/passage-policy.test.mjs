@@ -8,6 +8,7 @@ test('rejects arbitrary readers from clients',()=>assert.equal(validatePassageAt
 test('rejects replayed requests',()=>assert.equal(validatePassageAttempt({...valid,replayed:true}).status,409));
 test('rejects cross-origin requests',()=>assert.equal(validatePassageAttempt({...valid,originMatches:false}).status,403));
 test('rejects rate-limited requests',()=>assert.equal(validatePassageAttempt({...valid,recentAt:valid.now-1000}).status,429));
+test('allows another request after two seconds',()=>assert.equal(validatePassageAttempt({...valid,recentAt:valid.now-2000}).ok,true));
 test('rejects use without written authorization',()=>assert.equal(validatePassageAttempt({...valid,authorizationId:undefined}).status,503));
 test('rejects placeholder authorization values',()=>assert.equal(validatePassageAttempt({...valid,authorizationId:'UNAUTHORIZED'}).status,503));
 test('uses only server-derived customer and reader',()=>assert.deepEqual(validatePassageAttempt(valid),{ok:true,customerId:'customer-example-001',cardReader:900001,requestId:'11111111-1111-4111-8111-111111111111',auditTimestamp:'2027-01-15T08:00:00.000Z'}));

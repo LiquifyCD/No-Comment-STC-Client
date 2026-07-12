@@ -2,29 +2,35 @@
 
 Private, unofficial minimal door client for an authorized STC/BRP account.
 
-The iPhone-ready PWA has two minimal tabs: **Open** and **Create**. New reader names default to **Main entrance**. A reader is configured once with its location (`major`) and door (`minor`) codes; those values are encrypted server-side and resolved through BRP immediately before opening.
+The PWA has two tabs: **Open** and **Create**. Create accepts only a custom name, `major` location code, and `minor` door code. Saved doors can be removed from Open after explicit confirmation.
 
 ## Install on iPhone
 
-Open the site in Safari, then choose **Share → Add to Home Screen**. Launch the new **No-Comment STC Client** icon from the Home Screen to use standalone mode without Safari's address/search bar. A Safari bookmark or normal Safari tab always keeps Safari's controls.
+Open the site in Safari and choose **Share → Add to Home Screen**. Launch **No-Comment STC Client** from the Home Screen for standalone mode without Safari controls. A normal Safari tab or bookmark retains Safari’s address bar.
 
-The original doorway logo is [`web/icon.svg`](web/icon.svg). Rebuild the opaque Apple, regular, and maskable PNG icons with:
+The layout prioritizes iPhone 13 at 390×844 CSS pixels and remains centered with bounded controls on 2560×1440 displays. Touch controls are at least 44 points and respect iPhone safe areas.
+
+## Security
+
+- Login establishes an encrypted, `HttpOnly`, `Secure`, same-site server session.
+- Passwords, bearer/refresh tokens, upstream cookies, customer IDs, and resolved reader codes are never returned or persisted in the browser.
+- Stored `major` and `minor` values are encrypted and never returned.
+- Creation, opening, and deletion derive ownership from the authenticated server session.
+- Mutations require same-origin requests and a session-bound CSRF token.
+- Door opening has an atomic, server-side two-second cooldown per authenticated owner and reader, plus replay protection.
+- Enabled and deployment settings remain deployment-controlled. This change did not alter `PASSAGE_ENABLED` or any other existing enabled/disabled value.
+
+## API
+
+See [`docs/API.md`](docs/API.md) for the session, reader, passage, and deletion contracts used by the web app.
+
+## Branding
+
+The source logo is [`web/icon.svg`](web/icon.svg). Rebuild the opaque Apple, regular, and maskable PNG icons with:
 
 ```powershell
 python scripts/generate_icons.py
 ```
-
-## Security
-
-- Email, password, bearer token, refresh token, upstream cookies, customer ID, and numeric reader code are never stored, cached, logged, or returned.
-- Stored `major` and `minor` values are encrypted and never returned to the browser.
-- The card-reader ID is derived from BRP's passage-reader lookup and never accepted from the client.
-- Cross-origin browser requests, oversized payloads, and rapid repeated attempts are rejected.
-- `PASSAGE_ENABLED=false` is the committed safe default.
-
-## API
-
-See [`docs/API.md`](docs/API.md) for the base URL, `POST /api/open-door`, responses, reader configuration, and a safe example.
 
 ## Validation
 
@@ -34,11 +40,11 @@ npm run typecheck
 npx wrangler deploy --dry-run
 ```
 
-All automated tests use injected mock requests and must never reference or contact the real BRP/STC host or a real reader.
+Tests use mocked or local-only data and never contact a real BRP/STC endpoint or reader.
 
 ## Deployment
 
-Set `SESSION_ENCRYPTION_KEY`, `PASSAGE_AUTHORIZATION_ID`, and `READER_CATALOG` as Worker secrets. Do not enable production door requests without verified written authorization from STC/BRP.
+Set `SESSION_ENCRYPTION_KEY`, `PASSAGE_AUTHORIZATION_ID`, and `READER_CATALOG` as Worker secrets. Preserve the deployment’s existing enabled settings unless a separate change explicitly authorizes modifying them.
 
 ## License
 

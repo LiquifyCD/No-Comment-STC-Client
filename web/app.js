@@ -1,5 +1,5 @@
 const app=document.querySelector('#app');
-let session=null,readers=[],readerOptions=[],selectedReader='',activeTab='open',loginError='',loadError='',createMode='catalog';
+let session=null,readers=[],selectedReader='',activeTab='open',loginError='',loadError='',pendingDelete='';
 
 async function request(path,init={}){
   const response=await fetch(path,{...init,headers:{'content-type':'application/json',...(init.headers||{})},cache:'no-store',credentials:'same-origin'});
@@ -22,24 +22,17 @@ function loginView(){
 
 function appView(){
   const readerOpts=readers.map(reader=>`<option value="${escapeHtml(reader.id)}" ${reader.id===selectedReader?'selected':''}>${escapeHtml(reader.name)}</option>`).join('');
-  const readerKeyOpts=readerOptions.map(option=>`<option value="${escapeHtml(option.key)}">${escapeHtml(option.label)}</option>`).join('');
   const errorLine=loadError?`<p class="result error">${escapeHtml(loadError)}</p>`:'';
   if(activeTab==='open')return `${errorLine}<form id="open-view" class="panel">
     <label>Reader<select id="reader" required><option value="">Choose reader</option>${readerOpts}</select></label>
     <button class="primary" type="submit" ${session.passageEnabled?'':'disabled'}>Open</button>
+    <button id="delete" class="danger" type="button" ${selectedReader?'':'disabled'}>Delete door</button>
     <p id="result" class="result" role="status" aria-live="polite">${session.passageEnabled?'':'Door opening is currently disabled.'}</p>
   </form>`;
-  const modeToggle=`<div class="segment" role="tablist">
-    <button type="button" data-mode="catalog" class="segment-btn ${createMode==='catalog'?'active':''}">Preset</button>
-    <button type="button" data-mode="beacon" class="segment-btn ${createMode==='beacon'?'active':''}">Custom</button>
-  </div>`;
-  const fields=createMode==='beacon'
-    ?`<label>Major<input name="major" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>
-    <label>Minor<input name="minor" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>`
-    :`<label>Reader type<select name="readerKey" required><option value="">Choose reader type</option>${readerKeyOpts}</select></label>`;
-  return `${errorLine}${modeToggle}<form id="create-view" class="panel">
+  return `${errorLine}<form id="create-view" class="panel">
     <label>Name<input name="name" value="Main entrance" maxlength="40" autocomplete="off" required></label>
-    ${fields}
+    <label>Major<input name="major" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>
+    <label>Minor<input name="minor" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>
     <button class="primary" type="submit">Save</button>
     <p id="result" class="result" role="status" aria-live="polite"></p>
   </form>`;
@@ -53,7 +46,12 @@ function view(){
     <nav class="tab-bar" aria-label="Main navigation">
       <button type="button" data-tab="open" class="tab ${activeTab==='open'?'active':''}" ${activeTab==='open'?'aria-current="page"':''}>Open</button>
       <button type="button" data-tab="create" class="tab ${activeTab==='create'?'active':''}" ${activeTab==='create'?'aria-current="page"':''}>Create</button>
-    </nav></main>`;
+    </nav></main>
+    <dialog id="delete-dialog"><form method="dialog" id="delete-form">
+      <h2>Delete door?</h2><p class="delete-name"></p>
+      <p class="delete-error" role="alert"></p>
+      <div class="dialog-actions"><button type="submit" value="cancel">Cancel</button><button type="submit" value="confirm" class="danger solid">Delete</button></div>
+    </form></dialog>`;
 }
 
 async function loadSession(){
@@ -64,12 +62,11 @@ async function loadSession(){
 async function loadApp(){
   loadError='';
   try{
-    const [readersData,optionsData]=await Promise.all([request('/api/readers'),request('/api/reader-options')]);
-    readers=readersData.readers;readerOptions=optionsData.options;selectedReader=readers[0]?.id||'';
-    if(!readerOptions.length)createMode='beacon';
+    const readersData=await request('/api/readers');
+    readers=readersData.readers;if(!readers.some(reader=>reader.id===selectedReader))selectedReader=readers[0]?.id||'';
   }catch(error){
     if(error.status===401){session=null;return}
-    readers=[];readerOptions=[];loadError=error.message;
+    readers=[];loadError=error.message;
   }
 }
 
@@ -81,21 +78,37 @@ async function start(){
 
 async function logout(){
   try{await request('/api/logout',{method:'POST',headers:{'x-csrf-token':session.csrfToken}})}catch{}
-  session=null;readers=[];readerOptions=[];selectedReader='';activeTab='open';loginError='';loadError='';view();
+  session=null;readers=[];selectedReader='';activeTab='open';loginError='';loadError='';pendingDelete='';view();
 }
 
 app.addEventListener('change',event=>{if(event.target.id==='reader')selectedReader=event.target.value});
 app.addEventListener('click',event=>{
   const tab=event.target.closest('[data-tab]');
   if(tab){activeTab=tab.dataset.tab;view();return}
-  const mode=event.target.closest('[data-mode]');
-  if(mode){createMode=mode.dataset.mode;view();return}
+  if(event.target.id==='delete'&&selectedReader){
+    pendingDelete=selectedReader;const reader=readers.find(item=>item.id===pendingDelete),dialog=document.querySelector('#delete-dialog');
+    dialog.querySelector('.delete-name').textContent=reader?.name||'Selected door';dialog.showModal();return;
+  }
   if(event.target.id==='logout')logout();
 });
 
 app.addEventListener('submit',async event=>{
   event.preventDefault();
   const form=event.target,button=form.querySelector('button[type="submit"]');
+
+  if(form.id==='delete-form'){
+    if(event.submitter?.value==='cancel'){pendingDelete='';form.closest('dialog').close();return}
+    if(!pendingDelete)return;
+    const confirm=event.submitter,error=form.querySelector('.delete-error');error.textContent='';confirm.disabled=true;confirm.textContent='Deleting…';
+    try{
+      await request(`/api/readers/${pendingDelete}`,{method:'DELETE',headers:{'x-csrf-token':session.csrfToken},body:JSON.stringify({confirmed:true})});
+      readers=readers.filter(reader=>reader.id!==pendingDelete);selectedReader=readers[0]?.id||'';pendingDelete='';form.closest('dialog').close();view();setResult('Deleted.','success');
+    }catch(cause){
+      if(cause.status===401){session=null;view();return}
+      error.textContent=cause.message;
+    }finally{confirm.disabled=false;confirm.textContent='Delete'}
+    return;
+  }
 
   if(form.id==='login-view'){
     const data=new FormData(form);
@@ -126,9 +139,7 @@ app.addEventListener('submit',async event=>{
     if(!form.reportValidity())return;
     const data=new FormData(form);
     button.disabled=true;button.textContent='Saving…';
-    const payload=createMode==='beacon'
-      ?{name:data.get('name'),major:data.get('major'),minor:data.get('minor')}
-      :{name:data.get('name'),readerKey:data.get('readerKey')};
+    const payload={name:data.get('name'),major:data.get('major'),minor:data.get('minor')};
     try{
       const created=await request('/api/readers',{method:'POST',headers:{'x-csrf-token':session.csrfToken},body:JSON.stringify(payload)});
       readers=[created.reader,...readers.filter(reader=>reader.id!==created.reader.id)];selectedReader=created.reader.id;activeTab='open';view();setResult('Saved.','success');

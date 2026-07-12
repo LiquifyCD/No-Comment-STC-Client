@@ -14,6 +14,3 @@ export function parseReaderCatalog(value,fallbackCode){
   if(!entries.length&&Number.isInteger(fallbackCode)&&fallbackCode>0)entries.push({key:'default',label:'Standardreader',code:fallbackCode});
   return entries.length?{ok:true,entries}:{ok:false,error:'Ingen reader är konfigurerad på servern.'};
 }
-
-export function publicReaderOptions(catalog){return catalog.entries.map(({key,label})=>({key,label}))}
-export function resolveReaderCode(catalog,key){return catalog.entries.find(entry=>entry.key===key)?.code??null}
