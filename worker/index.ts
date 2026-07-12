@@ -1,7 +1,7 @@
 import { validatePassageAttempt } from './passage-policy.mjs';
 import { validateReaderName } from './reader-model.mjs';
 import { parseReaderCatalog, publicReaderOptions } from './reader-catalog.mjs';
-import { sendDoorRequest } from './door-service.mjs';
+import { sendDoorRequest, lookupPassageReader } from './door-service.mjs';
 import { validateReaderCreation } from './reader-request.mjs';
 import { runOpenDoorFlow } from './open-door-flow.mjs';
 import { runCreateReaderFlow } from './create-reader-flow.mjs';
@@ -89,16 +89,40 @@ async function openDoor(request:Request,env:Env) {
  console.log(JSON.stringify({event:'open_door_result',status:result.status,ok:result.ok}));
  return result.ok?response({ok:true},200):errorResponse(result.error,result.status);
 }
-async function createReader(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as unknown; const catalog=readerCatalog(env); if(!catalog.ok)return errorResponse(catalog.error,503); const valid=validateReaderCreation(body,catalog); if(!valid.ok)return errorResponse(valid.error,valid.status); const id=crypto.randomUUID(),now=new Date().toISOString(); try{await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at) VALUES(?,?,?,?,?,?,?)').bind(id,auth.owner,valid.name,valid.nameKey,valid.cardReader,now,now).run()}catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error} return response({reader:{id,name:valid.name,createdAt:now,lastOpenedAt:now}},201); }
+async function createReader(request:Request,env:Env) {
+ const auth=await requireSession(request,env); if('error'in auth)return auth.error;
+ const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid;
+ const body=await request.json() as unknown;
+ const valid=validateReaderCreation(body,readerCatalog(env));
+ if(!valid.ok)return errorResponse(valid.error,valid.status);
+ const id=crypto.randomUUID(),now=new Date().toISOString();
+ try{
+  if(valid.mode==='beacon'){
+   const ciphertext=await encryptJson({major:valid.major,minor:valid.minor},env.SESSION_ENCRYPTION_KEY);
+   await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at,config_ciphertext) VALUES(?,?,?,?,0,?,?,?)').bind(id,auth.owner,valid.name,valid.nameKey,now,now,ciphertext).run();
+  }else{
+   await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at) VALUES(?,?,?,?,?,?,?)').bind(id,auth.owner,valid.name,valid.nameKey,valid.cardReader,now,now).run();
+  }
+ }catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error}
+ return response({reader:{id,name:valid.name,createdAt:now,lastOpenedAt:now}},201);
+}
 async function getReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const row=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).first<ReaderRow>(); if(!row)return errorResponse('Läsaren hittades inte.',404); const now=new Date().toISOString(); await env.DB.prepare('UPDATE readers SET last_opened_at=? WHERE id=? AND owner_id=?').bind(now,readerId,auth.owner).run(); const events=await env.DB.prepare('SELECT id,event_type,data_json,created_at FROM reader_events WHERE reader_id=? AND owner_id=? ORDER BY created_at DESC LIMIT 20').bind(readerId,auth.owner).all<{id:string;event_type:string;data_json:string;created_at:string}>(); return response({reader:{...serializeReader(row),lastOpenedAt:now},events:events.results.map(event=>({id:event.id,type:event.event_type,data:JSON.parse(event.data_json),createdAt:event.created_at}))}); }
 async function renameReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as {name?:unknown}; const valid=validateReaderName(body.name); if(!valid.ok)return errorResponse(valid.error,400); try{const result=await env.DB.prepare('UPDATE readers SET name=?,name_key=? WHERE id=? AND owner_id=?').bind(valid.name,valid.nameKey,readerId,auth.owner).run(); if(!result.meta.changes)return errorResponse('Läsaren hittades inte.',404)}catch(error){if(isUniqueError(error))return errorResponse('En läsare med samma namn finns redan.',409);throw error} return response({reader:{id:readerId,name:valid.name}}); }
 async function deleteReader(request:Request,env:Env,readerId:string) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid; const body=await request.json() as {confirmed?:boolean}; if(body.confirmed!==true)return errorResponse('Borttagningen måste bekräftas.',400); const result=await env.DB.prepare('DELETE FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).run(); if(!result.meta.changes)return errorResponse('Läsaren hittades inte.',404); return response({deleted:true}); }
 async function passage(request:Request,env:Env,readerId:string) {
  const auth=await requireSession(request,env); if('error'in auth)return auth.error; const invalid=await verifyMutation(request,auth.active,env); if(invalid)return invalid;
- const reader=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).first<ReaderRow>(); if(!reader)return errorResponse('Läsaren hittades inte.',404);
+ const reader=await env.DB.prepare('SELECT id,name,card_reader,config_ciphertext,created_at,last_opened_at FROM readers WHERE id=? AND owner_id=?').bind(readerId,auth.owner).first<ReaderRow&{config_ciphertext:string|null}>(); if(!reader)return errorResponse('Läsaren hittades inte.',404);
+ let allowedReader=reader.card_reader;
+ if(!allowedReader){
+  if(!reader.config_ciphertext)return errorResponse('Ingen godkänd kortläsare är konfigurerad.',503);
+  const beacon=await decryptJson<{major:string;minor:string}>(reader.config_ciphertext,env.SESSION_ENCRYPTION_KEY);
+  const lookup=await lookupPassageReader({fetcher:fetch,baseUrl:env.BRP_BASE_URL,major:beacon.major,minor:beacon.minor,cookie:auth.active.data.upstreamCookie});
+  if(!lookup.ok)return errorResponse(lookup.status===404?'Läsaren hittades inte hos BRP.':'Läsaruppslagningen misslyckades.',lookup.status);
+  allowedReader=lookup.cardReader;
+ }
  let body:Record<string,unknown>|null=null; try{body=await request.json() as Record<string,unknown>}catch{return errorResponse('Ogiltig JSON.',400)}
  const requestId=typeof body.requestId==='string'?body.requestId:''; const replayed=Boolean(requestId&&await env.SESSIONS.get(`replay:${auth.active.id}:${readerId}:${requestId}`)); const recentRaw=await env.SESSIONS.get(`rate:${auth.active.id}:${readerId}`);
- const result=validatePassageAttempt({originMatches:true,authenticatedCustomerId:auth.active.data.customerId,body,enabled:passageEnabled(env.PASSAGE_ENABLED),authorizationId:env.PASSAGE_AUTHORIZATION_ID,allowedReader:reader.card_reader,replayed,recentAt:recentRaw?Number(recentRaw):null,now:Date.now()}); if(!result.ok)return errorResponse(result.error,result.status);
+ const result=validatePassageAttempt({originMatches:true,authenticatedCustomerId:auth.active.data.customerId,body,enabled:passageEnabled(env.PASSAGE_ENABLED),authorizationId:env.PASSAGE_AUTHORIZATION_ID,allowedReader,replayed,recentAt:recentRaw?Number(recentRaw):null,now:Date.now()}); if(!result.ok)return errorResponse(result.error,result.status);
  await env.SESSIONS.put(`replay:${auth.active.id}:${readerId}:${result.requestId}`,result.auditTimestamp,{expirationTtl:300}); await env.SESSIONS.put(`rate:${auth.active.id}:${readerId}`,String(Date.now()),{expirationTtl:60});
  const auditId=crypto.randomUUID(); const upstream=await sendDoorRequest({fetcher:fetch,baseUrl:env.BRP_BASE_URL,customerId:result.customerId,cardReader:result.cardReader,accessToken:auth.active.data.accessToken,cookie:auth.active.data.upstreamCookie}); const outcome=upstream.ok?'accepted':'rejected';
  await env.DB.prepare('INSERT INTO reader_events(id,reader_id,owner_id,event_type,data_json,created_at) VALUES(?,?,?,?,?,?)').bind(auditId,readerId,auth.owner,'passage',JSON.stringify({outcome,status:upstream.status}),result.auditTimestamp).run(); console.log(JSON.stringify({event:'passage_attempt',auditId,readerId,timestamp:result.auditTimestamp,outcome,status:upstream.status}));
