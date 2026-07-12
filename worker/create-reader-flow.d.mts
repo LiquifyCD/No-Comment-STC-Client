@@ -1,0 +1,2 @@
+export function validateConfiguredReader(body:unknown):{ok:true;name:string;nameKey:string;major:string;minor:string;email:string;password:string}|{ok:false;status:number;error:string};
+export function runCreateReaderFlow(input:{fetcher:typeof fetch;baseUrl:string;appId:string;body:unknown}):Promise<{ok:true;customerId:string;name:string;nameKey:string;major:string;minor:string}|{ok:false;status:number;error:string}>;

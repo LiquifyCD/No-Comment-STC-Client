@@ -1,0 +1,1 @@
+export function authenticateBrp(input:{fetcher:typeof fetch;baseUrl:string;appId:string;email:string;password:string}):Promise<{ok:true;customerId:string;accessToken:string;cookie?:string}|{ok:false;status:number;error:string}>;
