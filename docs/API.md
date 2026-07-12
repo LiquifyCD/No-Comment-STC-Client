@@ -1,4 +1,4 @@
-# Passage-reader lookup API
+# Web API
 
 Base URL:
 
@@ -6,74 +6,98 @@ Base URL:
 https://brp-personal-client.liquifycd.workers.dev
 ```
 
-## Create a reader
+The web app uses same-origin session cookies. Mutating session routes require the `x-csrf-token` returned by `GET /api/session`. Responses never expose credentials, tokens, cookies, customer IDs, `major`, `minor`, or resolved reader codes.
+
+## Login and session
 
 ```http
-POST /api/configured-readers
+POST /api/login
 Content-Type: application/json
 ```
 
 ```json
-{
-  "name": "Front door",
-  "major": "1234",
-  "minor": "567890",
-  "email": "user@example.com",
-  "password": "your-password"
-}
+{"username":"user@example.com","password":"your-password"}
 ```
 
-The credentials authenticate ownership and are discarded immediately. `major` and `minor` are encrypted before being stored. The API returns only the permanent reader UUID and display name:
+Successful login sets an encrypted `HttpOnly` session cookie. The browser then obtains session state with:
+
+```http
+GET /api/session
+```
 
 ```json
-{
-  "reader": {
-    "id": "11111111-1111-4111-8111-111111111111",
-    "name": "Front door"
-  }
-}
+{"authenticated":true,"expiresAt":"2026-07-12T12:00:00.000Z","csrfToken":"session-bound-value","passageEnabled":true}
 ```
 
-`GET /api/configured-readers` returns only configured reader UUIDs and names for the selector. It never returns `major`, `minor`, or a resolved card-reader ID.
+## List doors
+
+```http
+GET /api/readers
+```
+
+Returns only owner-scoped display data required by the selector.
+
+## Create a custom door
+
+```http
+POST /api/readers
+x-csrf-token: session-bound-value
+Content-Type: application/json
+```
+
+```json
+{"name":"Front door","major":"1234","minor":"567890"}
+```
+
+Only the custom `major`/`minor` format is accepted. Client-supplied reader codes are rejected, and both custom values are validated and encrypted before storage.
 
 ## Open a door
 
 ```http
-POST /api/open-door
+POST /api/readers/{readerId}/passage
+x-csrf-token: session-bound-value
 Content-Type: application/json
 ```
 
 ```json
-{
-  "email": "user@example.com",
-  "password": "your-password",
-  "reader": "11111111-1111-4111-8111-111111111111"
-}
+{"confirmed":true,"requestId":"11111111-1111-4111-8111-111111111111"}
 ```
 
-The Worker:
+The Worker derives the customer and door configuration from the session and owner-scoped database row. Requests have a two-second atomic cooldown per owner and reader. A request during the cooldown returns:
 
-1. Authenticates through BRP in memory.
-2. Verifies that the reader UUID belongs to the authenticated customer.
-3. Decrypts its stored `major` and `minor`.
-4. Calls `GET /passagereaders?major={major}&minor={minor}`.
-5. Validates the lookup response and uses its server-derived `id` for the passage request.
-6. Discards credentials, tokens, cookies, customer ID, lookup values, and the resolved reader ID.
-
-Success:
+```http
+HTTP/1.1 429 Too Many Requests
+```
 
 ```json
-{ "ok": true }
+{"error":"Vänta 2 sekunder innan nästa försök."}
 ```
 
-Error:
+## Delete a door
+
+```http
+DELETE /api/readers/{readerId}
+x-csrf-token: session-bound-value
+Content-Type: application/json
+```
 
 ```json
-{ "error": "Reader not found." }
+{"confirmed":true}
 ```
 
-The endpoint rejects client-supplied `major`, `minor`, `cardReader`, customer IDs, tokens, and cookies. Browser calls must be same-origin; direct API clients omit the `Origin` header.
+The server derives ownership from the session and deletes only a matching owner/reader row. Anonymous, cross-origin, invalid-CSRF, unconfirmed, other-owner, unknown, and repeated deletions are rejected. Success returns only:
+
+```json
+{"deleted":true}
+```
+
+## Logout
+
+```http
+POST /api/logout
+x-csrf-token: session-bound-value
+```
 
 ## Safe testing
 
-All tests inject `mock.invalid` responses for configuration, login, passage-reader lookup, and passage creation. Tests never reference or contact the real BRP/STC hostname or a real reader. Keep `PASSAGE_ENABLED=false` during development and testing.
+Automated tests use mock functions, in-memory SQLite, or static contract checks. They never contact a real BRP/STC host or reader. Enabled settings are not changed by tests.
