@@ -6,7 +6,13 @@ The iPhone-ready PWA has two minimal tabs: **Open** and **Create**. New reader n
 
 ## Install on iPhone
 
-Open the site in Safari, then choose **Share → Add to Home Screen**. Launch the saved Home Screen app to use standalone mode without Safari's address/search bar. A normal Safari tab always keeps Safari's controls.
+Open the site in Safari, then choose **Share → Add to Home Screen**. Launch the new **No-Comment STC Client** icon from the Home Screen to use standalone mode without Safari's address/search bar. A Safari bookmark or normal Safari tab always keeps Safari's controls.
+
+The original doorway logo is [`web/icon.svg`](web/icon.svg). Rebuild the opaque Apple, regular, and maskable PNG icons with:
+
+```powershell
+python scripts/generate_icons.py
+```
 
 ## Security
 
