@@ -43,7 +43,7 @@ async function ensureDefaultReader(env:Env,owner:string) {
  const catalog=readerCatalog(env); if(!catalog.ok)throw new Error(catalog.error);
  const now=new Date().toISOString(),id=crypto.randomUUID(),cardReader=catalog.entries[0].code;
  await env.DB.batch([
-  env.DB.prepare('INSERT OR IGNORE INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at) VALUES(?,?,?,?,?,?,NULL)').bind(id,owner,'Standardläsare','standardläsare',cardReader,now),
+  env.DB.prepare('INSERT OR IGNORE INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at) VALUES(?,?,?,?,?,?,NULL)').bind(id,owner,'Main entrance','main entrance',cardReader,now),
   env.DB.prepare('INSERT OR IGNORE INTO reader_migrations(owner_id,migrated_at) VALUES(?,?)').bind(owner,now),
  ]);
 }
