@@ -1,0 +1,1 @@
+export function validateExternalOpenRequest(input:{protocol:string;origin:string|null;expectedOrigin:string;apiKey:string;expectedApiKey:string|undefined;recentAt:number|null;now:number}):{ok:true}|{ok:false;status:number;error:string};
