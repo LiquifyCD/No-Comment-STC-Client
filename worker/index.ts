@@ -6,6 +6,7 @@ import { validateReaderCreation } from './reader-request.mjs';
 import { runOpenDoorFlow } from './open-door-flow.mjs';
 import { runCreateReaderFlow } from './create-reader-flow.mjs';
 import { encryptJson, decryptJson } from './secret-box.mjs';
+import { saveConfiguredReader } from './configured-reader-store.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type ActiveSession = { id:string; data:Session };
@@ -71,8 +72,9 @@ async function createConfiguredReader(request:Request,env:Env) {
  const result=await runCreateReaderFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body});if(!result.ok)return errorResponse(result.error,result.status);
  const owner=await ownerId(result.customerId,env.SESSION_ENCRYPTION_KEY),id=crypto.randomUUID(),now=new Date().toISOString();
  const ciphertext=await encryptJson({major:result.major,minor:result.minor},env.SESSION_ENCRYPTION_KEY);
- try{await env.DB.prepare('INSERT INTO readers(id,owner_id,name,name_key,card_reader,created_at,last_opened_at,config_ciphertext) VALUES(?,?,?,?,0,?,?,?)').bind(id,owner,result.name,result.nameKey,now,now,ciphertext).run()}catch(error){if(isUniqueError(error))return errorResponse('A reader with that name already exists.',409);throw error}
- return response({reader:{id,name:result.name}},201);
+ const savedId=await saveConfiguredReader({db:env.DB,id,owner,name:result.name,nameKey:result.nameKey,now,ciphertext});
+ if(!savedId)return errorResponse('A reader with that name already exists.',409);
+ return response({reader:{id:savedId,name:result.name}},201);
 }
 async function openDoor(request:Request,env:Env) {
  const origin=request.headers.get('origin'); if(origin&&origin!==new URL(request.url).origin)return errorResponse('Forbidden.',403);
