@@ -8,7 +8,7 @@ The PWA has two tabs: **Open** and **Create**. Create accepts only a custom name
 
 Open the site in Safari and choose **Share → Add to Home Screen**. Launch **No-Comment STC Client** from the Home Screen for standalone mode without Safari controls. A normal Safari tab or bookmark retains Safari’s address bar.
 
-The layout prioritizes iPhone 13 at 390×844 CSS pixels and remains centered with bounded controls on 2560×1440 displays. Touch controls are at least 44 points and respect iPhone safe areas.
+The adaptive layout uses a compact top account header and bottom navigation on phones, horizontal navigation on tablets, and a full desktop header/sidebar workspace on larger screens. It is verified from small mobile and iPhone 13 sizes through laptop, 1080p, and 1440p displays.
 
 ## Security
 
