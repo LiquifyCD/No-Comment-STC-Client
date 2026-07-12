@@ -1,5 +1,5 @@
 const app=document.querySelector('#app');
-let session=null,readers=[],readerOptions=[],selectedReader='',activeTab='open',loginError='',loadError='';
+let session=null,readers=[],readerOptions=[],selectedReader='',activeTab='open',loginError='',loadError='',createMode='catalog';
 
 async function request(path,init={}){
   const response=await fetch(path,{...init,headers:{'content-type':'application/json',...(init.headers||{})},cache:'no-store',credentials:'same-origin'});
@@ -29,9 +29,17 @@ function appView(){
     <button class="primary" type="submit" ${session.passageEnabled?'':'disabled'}>Open</button>
     <p id="result" class="result" role="status" aria-live="polite">${session.passageEnabled?'':'Door opening is currently disabled.'}</p>
   </form>`;
-  return `${errorLine}<form id="create-view" class="panel">
+  const modeToggle=`<div class="segment" role="tablist">
+    <button type="button" data-mode="catalog" class="segment-btn ${createMode==='catalog'?'active':''}">Preset</button>
+    <button type="button" data-mode="beacon" class="segment-btn ${createMode==='beacon'?'active':''}">Custom</button>
+  </div>`;
+  const fields=createMode==='beacon'
+    ?`<label>Major<input name="major" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>
+    <label>Minor<input name="minor" inputmode="numeric" pattern="[0-9]{1,12}" maxlength="12" autocomplete="off" required></label>`
+    :`<label>Reader type<select name="readerKey" required><option value="">Choose reader type</option>${readerKeyOpts}</select></label>`;
+  return `${errorLine}${modeToggle}<form id="create-view" class="panel">
     <label>Name<input name="name" value="Main entrance" maxlength="40" autocomplete="off" required></label>
-    <label>Reader type<select name="readerKey" required><option value="">Choose reader type</option>${readerKeyOpts}</select></label>
+    ${fields}
     <button class="primary" type="submit">Save</button>
     <p id="result" class="result" role="status" aria-live="polite"></p>
   </form>`;
@@ -58,6 +66,7 @@ async function loadApp(){
   try{
     const [readersData,optionsData]=await Promise.all([request('/api/readers'),request('/api/reader-options')]);
     readers=readersData.readers;readerOptions=optionsData.options;selectedReader=readers[0]?.id||'';
+    if(!readerOptions.length)createMode='beacon';
   }catch(error){
     if(error.status===401){session=null;return}
     readers=[];readerOptions=[];loadError=error.message;
@@ -79,6 +88,8 @@ app.addEventListener('change',event=>{if(event.target.id==='reader')selectedRead
 app.addEventListener('click',event=>{
   const tab=event.target.closest('[data-tab]');
   if(tab){activeTab=tab.dataset.tab;view();return}
+  const mode=event.target.closest('[data-mode]');
+  if(mode){createMode=mode.dataset.mode;view();return}
   if(event.target.id==='logout')logout();
 });
 
@@ -115,8 +126,11 @@ app.addEventListener('submit',async event=>{
     if(!form.reportValidity())return;
     const data=new FormData(form);
     button.disabled=true;button.textContent='Saving…';
+    const payload=createMode==='beacon'
+      ?{name:data.get('name'),major:data.get('major'),minor:data.get('minor')}
+      :{name:data.get('name'),readerKey:data.get('readerKey')};
     try{
-      const created=await request('/api/readers',{method:'POST',headers:{'x-csrf-token':session.csrfToken},body:JSON.stringify({name:data.get('name'),readerKey:data.get('readerKey')})});
+      const created=await request('/api/readers',{method:'POST',headers:{'x-csrf-token':session.csrfToken},body:JSON.stringify(payload)});
       readers=[created.reader,...readers.filter(reader=>reader.id!==created.reader.id)];selectedReader=created.reader.id;activeTab='open';view();setResult('Saved.','success');
     }catch(cause){
       if(cause.status===401){session=null;view();return}
