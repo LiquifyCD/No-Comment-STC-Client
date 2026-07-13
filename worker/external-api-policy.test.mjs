@@ -13,6 +13,6 @@ test('external API requires HTTPS and a valid API key',()=>{
 
 test('external API rejects cross-origin and repeated requests',()=>{
   assert.equal(validateExternalOpenRequest({...valid,origin:'https://evil.example'}).status,403);
-  assert.equal(validateExternalOpenRequest({...valid,recentAt:9_000}).status,429);
-  assert.deepEqual(validateExternalOpenRequest({...valid,recentAt:7_999}),{ok:true});
+  assert.equal(validateExternalOpenRequest({...valid,recentAt:9_500}).status,429);
+  assert.deepEqual(validateExternalOpenRequest({...valid,recentAt:9_000}),{ok:true});
 });

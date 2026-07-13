@@ -1,4 +1,4 @@
-export const PASSAGE_COOLDOWN_MS=2_000;
+export const PASSAGE_COOLDOWN_MS=1_000;
 export const ACQUIRE_PASSAGE_COOLDOWN=`
 INSERT INTO passage_cooldowns(owner_id,reader_id,last_attempt_ms)
 VALUES(?,?,?)

@@ -9,13 +9,13 @@ function database(){
   return {sqlite,db:{prepare(sql){const statement=sqlite.prepare(sql);return {bind(...values){return {first:async()=>statement.get(...values)??null}}}}}};
 }
 
-test('atomic cooldown is scoped to owner and reader and lasts two seconds',async()=>{
+test('atomic cooldown is scoped to owner and reader and lasts one second',async()=>{
   const {sqlite,db}=database();
-  assert.equal(PASSAGE_COOLDOWN_MS,2000);
+  assert.equal(PASSAGE_COOLDOWN_MS,1000);
   assert.equal(await acquirePassageCooldown({db,owner:'owner-a',readerId:'reader-a',now:10_000}),true);
-  assert.equal(await acquirePassageCooldown({db,owner:'owner-a',readerId:'reader-a',now:11_999}),false);
+  assert.equal(await acquirePassageCooldown({db,owner:'owner-a',readerId:'reader-a',now:10_999}),false);
   assert.equal(await acquirePassageCooldown({db,owner:'owner-b',readerId:'reader-a',now:11_000}),true);
   assert.equal(await acquirePassageCooldown({db,owner:'owner-a',readerId:'reader-b',now:11_000}),true);
-  assert.equal(await acquirePassageCooldown({db,owner:'owner-a',readerId:'reader-a',now:12_000}),true);
+  assert.equal(await acquirePassageCooldown({db,owner:'owner-a',readerId:'reader-a',now:11_000}),true);
   sqlite.close();
 });

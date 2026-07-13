@@ -10,6 +10,6 @@ export function validatePassageAttempt(input) {
   if (input.body.confirmed !== true) return { ok:false,status:400,error:'Passagen måste bekräftas.' };
   if (typeof input.body.requestId !== 'string' || !REQUEST_ID_PATTERN.test(input.body.requestId)) return { ok:false,status:400,error:'Ogiltigt request-ID.' };
   if (input.replayed) return { ok:false,status:409,error:'Begäran har redan behandlats.' };
-  if (input.recentAt !== null && input.now-input.recentAt<2_000) return { ok:false,status:429,error:'Vänta 2 sekunder innan nästa försök.' };
+  if (input.recentAt !== null && input.now-input.recentAt<1_000) return { ok:false,status:429,error:'Vänta 1 sekund innan nästa försök.' };
   return {ok:true,customerId:input.authenticatedCustomerId,cardReader:input.allowedReader,requestId:input.body.requestId,auditTimestamp:new Date(input.now).toISOString()};
 }

@@ -2,13 +2,13 @@
 
 Private, unofficial minimal door client for an authorized STC/BRP account.
 
-The PWA has two tabs: **Open** and **Create**. Create accepts only a custom name, `major` location code, and `minor` door code. Saved doors can be removed from Open after explicit confirmation.
+The PWA has **Open**, **Create**, and **Sequences** tabs. Create accepts only a custom name, `major` location code, and `minor` door code. Sequences run saved doors in order with controlled delays. Doors and sequences can be removed after explicit confirmation, and either type can be selected as the owner-scoped default.
 
 ## Install on iPhone
 
 Open the site in Safari and choose **Share → Add to Home Screen**. Launch **No-Comment STC Client** from the Home Screen for standalone mode without Safari controls. A normal Safari tab or bookmark retains Safari’s address bar.
 
-The adaptive layout uses a compact top account header and bottom navigation on phones, horizontal navigation on tablets, and a fluid desktop workspace up to 1800px wide. Desktop content expands to 1280px while the existing phone layout remains unchanged.
+The adaptive layout keeps the existing compact phone design, uses horizontal navigation on tablets, and fills desktop viewports without outer borders. Desktop content remains readable with a 1600px maximum content width.
 
 ## Security
 
@@ -17,12 +17,13 @@ The adaptive layout uses a compact top account header and bottom navigation on p
 - Stored `major` and `minor` values are encrypted and never returned.
 - Creation, opening, and deletion derive ownership from the authenticated server session.
 - Mutations require same-origin requests and a session-bound CSRF token.
-- Door opening has an atomic, server-side two-second cooldown per authenticated owner and reader, plus replay protection.
+- Door and sequence steps have an atomic, server-side one-second cooldown per authenticated owner and reader, plus replay protection.
+- Sequences accept only saved door names. Customer IDs, reader IDs/codes, `major`, `minor`, tokens, and cookies are resolved or retained server-side.
 - Enabled and deployment settings remain deployment-controlled. This change did not alter `PASSAGE_ENABLED` or any other existing enabled/disabled value.
 
 ## API
 
-See [`docs/API.md`](docs/API.md) for the web-session contracts and the API-key-protected one-request `POST /api/open-door` integration.
+See [`docs/API.md`](docs/API.md) for doors, sequences, defaults, limits, errors, and the API-key-protected one-request `POST /api/open-door` integration.
 
 ## Branding
 
@@ -45,6 +46,11 @@ Tests use mocked or local-only data and never contact a real BRP/STC endpoint or
 ## Deployment
 
 Set `SESSION_ENCRYPTION_KEY`, `PASSAGE_AUTHORIZATION_ID`, `READER_CATALOG`, and `OPEN_DOOR_API_KEY` as Worker secrets. Preserve the deployment’s existing enabled settings unless a separate change explicitly authorizes modifying them.
+
+```powershell
+npx wrangler d1 migrations apply brp-personal-client --remote
+npx wrangler deploy
+```
 
 ## License
 
