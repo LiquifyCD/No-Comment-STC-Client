@@ -10,6 +10,6 @@ export function validateExternalOpenRequest({protocol,origin,expectedOrigin,apiK
   if(protocol!=='https:')return {ok:false,status:400,error:'HTTPS required.'};
   if(origin&&origin!==expectedOrigin)return {ok:false,status:403,error:'Forbidden.'};
   if(!expectedApiKey||!apiKey||!safeEqual(apiKey,expectedApiKey))return {ok:false,status:401,error:'Unauthorized.'};
-  if(recentAt!==null&&now-recentAt<2_000)return {ok:false,status:429,error:'Try again in 2 seconds.'};
+  if(recentAt!==null&&now-recentAt<1_000)return {ok:false,status:429,error:'Try again in 1 second.'};
   return {ok:true};
 }
