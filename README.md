@@ -72,4 +72,4 @@ npx wrangler deploy
 
 ## License and third parties
 
-Copyright © 2026 LiquifyCD. Licensed under the custom [No-Comment Personal Use License](LICENSE). It is restrictive and has not been reviewed for your jurisdiction; obtain independent legal review before relying on it. Third-party components remain governed by their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Copyright © 2026 LiquifyCD. Licensed under the custom [No-Comment Personal Use License](LICENSE). This project is source-available, not open source. Third-party components remain governed by their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
