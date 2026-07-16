@@ -16,10 +16,10 @@ export function validateOpenDoorBody(body){
   return {ok:true,email:body.email.trim(),password:body.password,targetType:doorName?'door':'sequence',targetName,targetNameKey:targetName.toLocaleLowerCase('sv-SE')};
 }
 
-export async function runOpenDoorFlow({fetcher,baseUrl,appId,body,resolveTarget,executeTarget,enabled,authorizationId}){
+export async function runOpenDoorFlow({fetcher,baseUrl,appId,body,resolveTarget,executeTarget,enabled,authorizationId,onTiming}){
   const valid=validateOpenDoorBody(body);if(!valid.ok)return valid;
   if(!enabled||!authorizationId?.startsWith('APPROVED-'))return {ok:false,status:503,error:'Door opening is disabled.'};
-  const auth=await authenticateBrp({fetcher,baseUrl,appId,email:valid.email,password:valid.password});if(!auth.ok)return auth;
+  const auth=await authenticateBrp({fetcher,baseUrl,appId,email:valid.email,password:valid.password,onTiming});if(!auth.ok)return auth;
   const target=await resolveTarget(auth.customerId,valid.targetType,valid.targetNameKey);
   if(!target)return {ok:false,status:404,error:'Target not found.'};
   if(target.ambiguous)return {ok:false,status:409,error:'Target name is ambiguous.'};

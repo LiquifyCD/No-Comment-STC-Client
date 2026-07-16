@@ -1,0 +1,1 @@
+export function refreshBrpSession(input:{fetcher:typeof fetch;baseUrl:string;path?:string;refreshToken?:string;currentCookie?:string;customerId:string;now?:()=>number}):Promise<{ok:true;customerId:string;accessToken:string;refreshToken?:string;upstreamCookie?:string;expiresAt:number}|{ok:false;status:number;error:string}>;

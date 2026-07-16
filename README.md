@@ -2,7 +2,7 @@
 
 Private, unofficial minimal door client for an authorized STC/BRP account.
 
-The PWA has **Open**, **Create**, and **Sequences** tabs. Create accepts only a custom name, `major` location code, and `minor` door code. Sequences run saved doors in order with controlled delays. Doors and sequences can be removed after explicit confirmation, and either type can be selected as the owner-scoped default.
+The PWA has **Open**, **Create**, **Sequences**, and **Devices** tabs. Devices creates revocable, expiring credentials for a faster iPhone Shortcut flow without placing BRP login details in the shortcut.
 
 ## Install on iPhone
 
@@ -14,6 +14,7 @@ The adaptive layout keeps the existing compact phone design, uses horizontal nav
 
 - Login establishes an encrypted, `HttpOnly`, `Secure`, same-site server session.
 - Passwords, bearer/refresh tokens, upstream cookies, customer IDs, and resolved reader codes are never returned or persisted in the browser.
+- Device credentials are shown once. Only a keyed hash is stored; the reusable BRP session stays AES-GCM encrypted server-side. Device credentials can be restricted, rotated, reauthorized, or revoked.
 - Stored `major` and `minor` values are encrypted and never returned.
 - Creation, opening, and deletion derive ownership from the authenticated server session.
 - Mutations require same-origin requests and a session-bound CSRF token.
@@ -23,7 +24,7 @@ The adaptive layout keeps the existing compact phone design, uses horizontal nav
 
 ## API
 
-See [`docs/API.md`](docs/API.md) for doors, sequences, defaults, limits, errors, and the API-key-protected one-request `POST /api/open-door` integration.
+See [`docs/API.md`](docs/API.md) for the recommended fast iPhone Shortcut setup, device-session lifecycle, legacy API, limits, and errors.
 
 ## Branding
 
@@ -51,6 +52,8 @@ Set `SESSION_ENCRYPTION_KEY`, `PASSAGE_AUTHORIZATION_ID`, `READER_CATALOG`, and 
 npx wrangler d1 migrations apply brp-personal-client --remote
 npx wrangler deploy
 ```
+
+`BRP_REFRESH_PATH` is intentionally unset until the upstream refresh request has been verified. Access tokens are reused until expiry; use **Devices → Reauthorize** after signing in again if refresh is unavailable. Never guess or enable an upstream refresh path in production.
 
 ## License
 
