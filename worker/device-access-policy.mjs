@@ -1,0 +1,2 @@
+export function validateDeviceRecord({row,computedHash,now,constantTimeEqual}){if(!row||row.revoked_at||row.expires_at<=now||!constantTimeEqual(row.token_hash,computedHash))return {ok:false,status:401,error:'Invalid or expired device credential.'};return {ok:true}}
+export function isDeviceTargetAllowed(allowedTargetIds,targetId){return allowedTargetIds.length===0||allowedTargetIds.includes(targetId)}

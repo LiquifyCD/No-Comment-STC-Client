@@ -8,9 +8,38 @@ https://brp-personal-client.liquifycd.workers.dev
 
 The web app uses same-origin session cookies. Mutating session routes require the `x-csrf-token` returned by `GET /api/session`. Responses never expose credentials, tokens, cookies, customer IDs, `major`, `minor`, or resolved reader codes.
 
-## One-request API
+## Fast iPhone Shortcut API (recommended)
 
-`POST /api/open-door` is for an authorized personal client on another device. It requires HTTPS and the independent `OPEN_DOOR_API_KEY` Worker secret in `x-api-key`.
+Sign in to the web app once, open **Devices**, create an expiring device credential, and copy it when shown. The Worker stores only its keyed hash. The BRP access/refresh tokens and cookie remain encrypted server-side; the password is never stored.
+
+In Apple Shortcuts, add **Get Contents of URL** with these exact values:
+
+```text
+URL: https://brp-personal-client.liquifycd.workers.dev/api/open-door
+Method: POST
+Header Authorization: Bearer brpd_PASTE_THE_DEVICE_CREDENTIAL_HERE
+Header Content-Type: application/json
+Request Body: JSON
+sequenceName: Main then sluss
+```
+
+For one door, replace `sequenceName` with `doorName`. Send exactly one of them. No email, password, customer ID, token, cookie, reader ID, `major`, or `minor` belongs in the shortcut. Values may be typed directly; variables are optional.
+
+```http
+POST /api/open-door
+Authorization: Bearer brpd_device-id.random-secret
+Content-Type: application/json
+
+{"sequenceName":"Main then sluss"}
+```
+
+The fast path normally skips app configuration and login, reusing the encrypted server session. Each credential has an expiry, last-used timestamp, optional target allowlist, one-second limit, and audit timestamps. It can be renamed, rotated, reauthorized, or revoked in **Devices**. Rotation invalidates the old value immediately. If upstream refresh is not verified/configured, an expired BRP session returns `401` and must be reauthorized from a current web login.
+
+Open responses are never cached or replayed. A BRP `401` permits at most one refresh and one retry of that same reader request; concurrent refresh is guarded by a database lock. Timing logs contain only mode, status, total milliseconds, and stage durations—never identities, target names, credentials, or upstream response data.
+
+## Legacy one-request API
+
+The older email/password form remains temporarily compatible. It requires HTTPS and the independent `OPEN_DOOR_API_KEY` Worker secret in `x-api-key`, but is slower because it loads app configuration and logs in for every request.
 
 ```http
 POST /api/open-door

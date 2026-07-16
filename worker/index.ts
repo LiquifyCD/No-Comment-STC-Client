@@ -12,6 +12,11 @@ import { deleteOwnedReader, validateReaderDeletion } from './reader-deletion.mjs
 import { validateExternalOpenRequest } from './external-api-policy.mjs';
 import { runSequenceSteps, validateSequenceInput } from './sequence-model.mjs';
 import { getDefaultSelection, resolveSequenceReaders } from './sequence-store.mjs';
+import { constantTimeEqual, createDeviceCredential, hashDeviceSecret, parseDeviceCredential, validateDeviceInput, validateDeviceTargetBody } from './device-credential.mjs';
+import { refreshBrpSession } from './brp-refresh.mjs';
+import { isDeviceTargetAllowed, validateDeviceRecord } from './device-access-policy.mjs';
+import { coordinateRefresh } from './refresh-coordinator.mjs';
+import { sendWithOne401Retry } from './retry-once.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type PassageCredentials = { accessToken:string; customerId:string; upstreamCookie?:string };
@@ -19,6 +24,8 @@ type ActiveSession = { id:string; data:Session };
 type ReaderRow = { id:string; name:string; card_reader:number; created_at:string; last_opened_at:string|null };
 type SequenceRow = { id:string; name:string; created_at:string; updated_at:string };
 type SequenceStepRow = { sequence_id:string; position:number; reader_id:string; reader_name:string; delay_after_ms:number; config_ciphertext?:string };
+type DeviceSessionRow = { id:string;owner_id:string;name:string;token_hash:string;session_ciphertext:string;upstream_expires_at:number;expires_at:number;created_at:string;updated_at:string;last_used_at:string|null;revoked_at:string|null;refresh_lock_until:number|null;session_version:number };
+type DeviceUpstreamSession = PassageCredentials & {refreshToken?:string;expiresAt:number};
 
 const JSON_HEADERS = { 'content-type':'application/json', 'cache-control':'no-store', 'x-content-type-options':'nosniff' };
 const UPSTREAM_HEADERS = { accept:'application/json', 'content-type':'application/json', 'x-request-source':'mobilityapp', 'accept-language':'sv-SE' };
@@ -44,6 +51,8 @@ function serializeReader(row:ReaderRow) { return {id:row.id,name:row.name,create
 function serializeSequences(rows:SequenceRow[],steps:SequenceStepRow[]) { return rows.map(row=>({id:row.id,name:row.name,createdAt:row.created_at,updatedAt:row.updated_at,steps:steps.filter(step=>step.sequence_id===row.id).sort((a,b)=>a.position-b.position).map(step=>({doorName:step.reader_name,delaySeconds:step.delay_after_ms/1000}))})).filter(sequence=>sequence.steps.length>0); }
 function isUniqueError(error:unknown) { return error instanceof Error && /UNIQUE constraint failed/i.test(error.message); }
 function readerCatalog(env:Env) { return parseReaderCatalog(env.READER_CATALOG,0); }
+function bearer(request:Request) { const value=request.headers.get('authorization')??'';return value.startsWith('Bearer ')?value.slice(7):''; }
+function auditDevice(env:Env,row:Pick<DeviceSessionRow,'id'|'owner_id'>,eventType:string,at=new Date().toISOString()) { return env.DB.prepare('INSERT INTO device_session_events(id,device_session_id,owner_id,event_type,created_at) VALUES(?,?,?,?,?)').bind(crypto.randomUUID(),row.id,row.owner_id,eventType,at).run(); }
 
 async function requireSession(request:Request,env:Env):Promise<{error:Response}|{active:ActiveSession;owner:string}> { const active=await getSession(request,env); if(!active)return {error:errorResponse('Inte inloggad.',401)}; return {active,owner:await ownerId(active.data.customerId,env.SESSION_ENCRYPTION_KEY)}; }
 async function verifyMutation(request:Request,active:ActiveSession,env:Env) { if(!sameOrigin(request))return errorResponse('Otillåtet ursprung.',403); const token=request.headers.get('x-csrf-token')??'',expected=await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY); if(!token||!safeEqual(token,expected))return errorResponse('Ogiltig CSRF-token.',403); return null; }
@@ -86,7 +95,7 @@ async function login(request:Request,env:Env) {
 async function sessionStatus(request:Request,env:Env) { const active=await getSession(request,env); if(!active)return response({authenticated:false}); return response({authenticated:true,expiresAt:new Date(active.data.expiresAt).toISOString(),csrfToken:await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY),passageEnabled:passageEnabled(env.PASSAGE_ENABLED)&&env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-')}); }
 async function listReaders(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; await ensureDefaultReader(env,auth.owner); const rows=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE owner_id=? ORDER BY COALESCE(last_opened_at,created_at) DESC').bind(auth.owner).all<ReaderRow>(); return response({readers:rows.results.map(serializeReader)}); }
 async function listConfiguredReaders(env:Env) { const rows=await env.DB.prepare('SELECT id,name FROM readers WHERE config_ciphertext IS NOT NULL ORDER BY created_at DESC').all<{id:string;name:string}>(); return response({readers:rows.results}); }
-async function executeStoredReader(env:Env,owner:string,session:PassageCredentials,readerId:string,eventType:string) {
+async function executeStoredReader(env:Env,owner:string,session:PassageCredentials,readerId:string,eventType:string,retryCredentials?:()=>Promise<PassageCredentials|null>) {
  const reader=await env.DB.prepare('SELECT card_reader,config_ciphertext FROM readers WHERE id=? AND owner_id=? AND (config_ciphertext IS NOT NULL OR card_reader>0)').bind(readerId,owner).first<{card_reader:number;config_ciphertext:string|null}>();
  if(!reader)return {ok:false as const,status:404,error:'Dörren hittades inte.'};
  let cardReader=reader.card_reader;
@@ -98,10 +107,53 @@ async function executeStoredReader(env:Env,owner:string,session:PassageCredentia
   cardReader=lookup.cardReader;
  }
  const now=Date.now();if(!await acquirePassageCooldown({db:env.DB,owner,readerId,now}))return {ok:false as const,status:429,error:'Vänta 1 sekund innan nästa försök.'};
- const upstream=await sendDoorRequest({fetcher:fetch,baseUrl:env.BRP_BASE_URL,customerId:session.customerId,cardReader,accessToken:session.accessToken,cookie:session.upstreamCookie});
+ const upstream=await sendWithOne401Retry({send:(credentials?:PassageCredentials)=>{const active=credentials??session;return sendDoorRequest({fetcher:fetch,baseUrl:env.BRP_BASE_URL,customerId:active.customerId,cardReader,accessToken:active.accessToken,cookie:active.upstreamCookie})},refresh:retryCredentials});
  const timestamp=new Date(now).toISOString(),auditId=crypto.randomUUID(),outcome=upstream.ok?'accepted':'rejected';
  await env.DB.prepare('INSERT INTO reader_events(id,reader_id,owner_id,event_type,data_json,created_at) VALUES(?,?,?,?,?,?)').bind(auditId,readerId,owner,eventType,JSON.stringify({outcome,status:upstream.status}),timestamp).run();
  return upstream.ok?{ok:true as const,timestamp}:{ok:false as const,status:upstream.status===401?401:502,error:'Dörrförsöket avvisades.'};
+}
+
+async function resolveNamedTarget(env:Env,owner:string,type:'door'|'sequence',nameKey:string) {
+ if(type==='door'){const rows=await env.DB.prepare('SELECT id FROM readers WHERE owner_id=? AND name_key=? AND (config_ciphertext IS NOT NULL OR card_reader>0) LIMIT 2').bind(owner,nameKey).all<{id:string}>();if(rows.results.length>1)return {ambiguous:true as const};return rows.results[0]?{id:rows.results[0].id,type:'door' as const,steps:[{readerId:rows.results[0].id,delayAfterMs:0}]}:null}
+ const rows=await env.DB.prepare('SELECT id FROM sequences WHERE owner_id=? AND name_key=? LIMIT 2').bind(owner,nameKey).all<{id:string}>();if(rows.results.length>1)return {ambiguous:true as const};if(!rows.results[0])return null;const stored=await storedSequenceSteps(env,owner,rows.results[0].id);return stored?{id:stored.id,type:'sequence' as const,steps:stored.steps}:null;
+}
+
+async function refreshDevice(env:Env,row:DeviceSessionRow,current:DeviceUpstreamSession):Promise<DeviceUpstreamSession|null> {
+ const refreshPath=(env as Env&{BRP_REFRESH_PATH?:string}).BRP_REFRESH_PATH;if(!refreshPath||!current.refreshToken)return null;
+ const now=Date.now();
+ return await coordinateRefresh<DeviceUpstreamSession>({version:row.session_version,
+  tryAcquire:async version=>(await env.DB.prepare('UPDATE device_sessions SET refresh_lock_until=? WHERE id=? AND owner_id=? AND session_version=? AND (refresh_lock_until IS NULL OR refresh_lock_until<?)').bind(now+10000,row.id,row.owner_id,version,now).run()).meta.changes>0,
+  readCurrent:async()=>{const newer=await env.DB.prepare('SELECT session_ciphertext,session_version FROM device_sessions WHERE id=? AND owner_id=?').bind(row.id,row.owner_id).first<{session_ciphertext:string;session_version:number}>();return newer?{version:newer.session_version,session:await decryptJson<DeviceUpstreamSession>(newer.session_ciphertext,env.SESSION_ENCRYPTION_KEY)}:null},
+  refresh:async()=>{const result=await refreshBrpSession({fetcher:fetch,baseUrl:env.BRP_BASE_URL,path:refreshPath,refreshToken:current.refreshToken,currentCookie:current.upstreamCookie,customerId:current.customerId});return result.ok?{customerId:result.customerId,accessToken:result.accessToken,refreshToken:result.refreshToken,upstreamCookie:result.upstreamCookie,expiresAt:result.expiresAt}:null},
+  save:async(session,version)=>{const timestamp=new Date().toISOString(),ciphertext=await encryptJson(session,env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,refresh_lock_until=NULL,session_version=session_version+1 WHERE id=? AND owner_id=? AND session_version=?').bind(ciphertext,session.expiresAt,timestamp,row.id,row.owner_id,version).run();await auditDevice(env,row,'refresh',timestamp)},
+  release:async version=>{await env.DB.prepare('UPDATE device_sessions SET refresh_lock_until=NULL WHERE id=? AND owner_id=? AND session_version=?').bind(row.id,row.owner_id,version).run()},wait:()=>new Promise(resolve=>setTimeout(resolve,50))});
+}
+
+async function listDeviceSessions(request:Request,env:Env) {
+ const auth=await requireSession(request,env);if('error'in auth)return auth.error;
+ const rows=await env.DB.prepare('SELECT id,owner_id,name,expires_at,created_at,updated_at,last_used_at,revoked_at FROM device_sessions WHERE owner_id=? ORDER BY created_at DESC').bind(auth.owner).all<DeviceSessionRow>();
+ const targets=await env.DB.prepare("SELECT dst.device_session_id,dst.target_type,CASE dst.target_type WHEN 'door' THEN r.name ELSE s.name END AS target_name FROM device_session_targets dst LEFT JOIN readers r ON dst.target_type='door' AND r.id=dst.target_id LEFT JOIN sequences s ON dst.target_type='sequence' AND s.id=dst.target_id JOIN device_sessions ds ON ds.id=dst.device_session_id WHERE ds.owner_id=?").bind(auth.owner).all<{device_session_id:string;target_type:'door'|'sequence';target_name:string|null}>();
+ return response({devices:rows.results.map(row=>({id:row.id,name:row.name,expiresAt:new Date(row.expires_at).toISOString(),createdAt:row.created_at,updatedAt:row.updated_at,lastUsedAt:row.last_used_at,revokedAt:row.revoked_at,targets:targets.results.filter(target=>target.device_session_id===row.id&&target.target_name).map(target=>({type:target.target_type,name:target.target_name}))}))});
+}
+
+async function createDeviceSession(request:Request,env:Env) {
+ const auth=await requireSession(request,env);if('error'in auth)return auth.error;const invalid=await verifyMutation(request,auth.active,env);if(invalid)return invalid;
+ let body:unknown;try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}const valid=validateDeviceInput(body);if(!valid.ok)return errorResponse(valid.error,valid.status);
+ for(const target of valid.targets){const table=target.type==='door'?'readers':'sequences';const owned=await env.DB.prepare(`SELECT id FROM ${table} WHERE id=? AND owner_id=?`).bind(target.id,auth.owner).first();if(!owned)return errorResponse('Invalid target allowlist.',400)}
+ const generated=createDeviceCredential(),tokenHash=await hashDeviceSecret(generated.secret,env.SESSION_ENCRYPTION_KEY),now=Date.now(),timestamp=new Date(now).toISOString(),expiresAt=now+valid.expiresInDays*86400000;
+ const upstream:DeviceUpstreamSession={customerId:auth.active.data.customerId,accessToken:auth.active.data.accessToken,refreshToken:auth.active.data.refreshToken,upstreamCookie:auth.active.data.upstreamCookie,expiresAt:auth.active.data.expiresAt},ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);
+ const statements=[env.DB.prepare('INSERT INTO device_sessions(id,owner_id,name,name_key,token_hash,session_ciphertext,upstream_expires_at,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(generated.id,auth.owner,valid.name,valid.nameKey,tokenHash,ciphertext,upstream.expiresAt,expiresAt,timestamp,timestamp),...valid.targets.map(target=>env.DB.prepare('INSERT INTO device_session_targets(device_session_id,target_type,target_id) VALUES(?,?,?)').bind(generated.id,target.type,target.id))];
+ try{await env.DB.batch(statements)}catch(error){if(isUniqueError(error))return errorResponse('A device with that name already exists.',409);throw error}
+ await auditDevice(env,{id:generated.id,owner_id:auth.owner},'create',timestamp);return response({device:{id:generated.id,name:valid.name,expiresAt:new Date(expiresAt).toISOString()},credential:generated.credential},201);
+}
+
+async function mutateDeviceSession(request:Request,env:Env,id:string,action?:'rotate'|'reauthorize') {
+ const auth=await requireSession(request,env);if('error'in auth)return auth.error;const invalid=await verifyMutation(request,auth.active,env);if(invalid)return invalid;
+ const row=await env.DB.prepare('SELECT * FROM device_sessions WHERE id=? AND owner_id=?').bind(id,auth.owner).first<DeviceSessionRow>();if(!row)return errorResponse('Device not found.',404);const timestamp=new Date().toISOString();
+ if(request.method==='DELETE'){await env.DB.prepare('UPDATE device_sessions SET revoked_at=?,updated_at=? WHERE id=? AND owner_id=?').bind(timestamp,timestamp,id,auth.owner).run();await auditDevice(env,row,'revoke',timestamp);return response({revoked:true})}
+ if(action==='rotate'){const generated=createDeviceCredential(id),hash=await hashDeviceSecret(generated.secret,env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE device_sessions SET token_hash=?,revoked_at=NULL,updated_at=? WHERE id=? AND owner_id=?').bind(hash,timestamp,id,auth.owner).run();await auditDevice(env,row,'rotate',timestamp);return response({credential:generated.credential})}
+ if(action==='reauthorize'){const upstream:DeviceUpstreamSession={customerId:auth.active.data.customerId,accessToken:auth.active.data.accessToken,refreshToken:auth.active.data.refreshToken,upstreamCookie:auth.active.data.upstreamCookie,expiresAt:auth.active.data.expiresAt},ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,session_version=session_version+1,refresh_lock_until=NULL WHERE id=? AND owner_id=?').bind(ciphertext,upstream.expiresAt,timestamp,id,auth.owner).run();await auditDevice(env,row,'reauthorize',timestamp);return response({reauthorized:true})}
+ let body:{name?:unknown};try{body=await request.json() as {name?:unknown}}catch{return errorResponse('Invalid request.',400)}const name=validateReaderName(body.name);if(!name.ok)return errorResponse(name.error,400);try{await env.DB.prepare('UPDATE device_sessions SET name=?,name_key=?,updated_at=? WHERE id=? AND owner_id=?').bind(name.name,name.nameKey,timestamp,id,auth.owner).run()}catch(error){if(isUniqueError(error))return errorResponse('A device with that name already exists.',409);throw error}await auditDevice(env,row,'rename',timestamp);return response({device:{id,name:name.name}});
 }
 async function createConfiguredReader(request:Request,env:Env) {
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return errorResponse('Forbidden.',403);
@@ -115,16 +167,37 @@ async function createConfiguredReader(request:Request,env:Env) {
  return response({reader:{id:savedId,name:result.name}},201);
 }
 async function openDoor(request:Request,env:Env) {
- const url=new URL(request.url),clientKey=await ownerId(`open:${request.headers.get('cf-connecting-ip')??'unknown'}`,env.SESSION_ENCRYPTION_KEY),rateKey=`open-rate:${clientKey}`,now=Date.now(),recentRaw=await env.SESSIONS.get(rateKey);
- const access=validateExternalOpenRequest({protocol:url.protocol,origin:request.headers.get('origin'),expectedOrigin:url.origin,apiKey:request.headers.get('x-api-key')??'',expectedApiKey:env.OPEN_DOOR_API_KEY,recentAt:recentRaw?Number(recentRaw):null,now});if(!access.ok)return errorResponse(access.error,access.status);
+ const started=Date.now(),timings:Record<string,number>={},url=new URL(request.url),deviceCredential=parseDeviceCredential(bearer(request)),now=Date.now();
+ const logTiming=(mode:'device'|'legacy',status:number,ok:boolean)=>console.log(JSON.stringify({event:'open_door_timing',mode,status,ok,totalMs:Date.now()-started,stages:timings}));
  const length=Number(request.headers.get('content-length')??0); if(length>2048)return errorResponse('Invalid request.',413);
  let body:unknown; try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}
  if(!passageEnabled(env.PASSAGE_ENABLED)||!env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-'))return errorResponse('Door opening is disabled.',503);
+ if(deviceCredential){
+  if(request.headers.get('origin')&&request.headers.get('origin')!==url.origin){logTiming('device',403,false);return errorResponse('Forbidden.',403)}
+  const lookupStarted=Date.now(),row=await env.DB.prepare('SELECT * FROM device_sessions WHERE id=?').bind(deviceCredential.id).first<DeviceSessionRow>();timings.deviceLookup=Date.now()-lookupStarted;
+  if(!row){logTiming('device',401,false);return errorResponse('Invalid or expired device credential.',401)}
+  const deviceAccess=validateDeviceRecord({row,computedHash:await hashDeviceSecret(deviceCredential.secret,env.SESSION_ENCRYPTION_KEY),now,constantTimeEqual});if(!deviceAccess.ok){logTiming('device',401,false);return errorResponse(deviceAccess.error,401)}
+  const rateKey=`device-rate:${row.id}`,recentRaw=await env.SESSIONS.get(rateKey);if(recentRaw&&now-Number(recentRaw)<1000){logTiming('device',429,false);return errorResponse('Wait 1 second before retrying.',429)}await env.SESSIONS.put(rateKey,String(now),{expirationTtl:60});
+  const valid=validateDeviceTargetBody(body);if(!valid.ok){logTiming('device',valid.status,false);return errorResponse(valid.error,valid.status)}
+  let session=await decryptJson<DeviceUpstreamSession>(row.session_ciphertext,env.SESSION_ENCRYPTION_KEY),mutableVersion=row.session_version;
+  if(session.customerId.length<1||await ownerId(session.customerId,env.SESSION_ENCRYPTION_KEY)!==row.owner_id){logTiming('device',401,false);return errorResponse('Invalid device session.',401)}
+  if(session.expiresAt<=now+30000){const refreshStarted=Date.now(),fresh=await refreshDevice(env,{...row,session_version:mutableVersion},session);timings.refresh=Date.now()-refreshStarted;if(!fresh){logTiming('device',401,false);return errorResponse('Device session needs reauthorization.',401)}session=fresh;mutableVersion++}
+  const targetStarted=Date.now(),target=await resolveNamedTarget(env,row.owner_id,valid.targetType,valid.targetNameKey);timings.targetLookup=Date.now()-targetStarted;
+  if(!target||'ambiguous'in target){const status=target?409:404;logTiming('device',status,false);return errorResponse(target?'Target name is ambiguous.':'Target not found.',status)}
+  const allowlist=await env.DB.prepare('SELECT target_id FROM device_session_targets WHERE device_session_id=?').bind(row.id).all<{target_id:string}>();if(!isDeviceTargetAllowed(allowlist.results.map(entry=>entry.target_id),target.id)){logTiming('device',403,false);return errorResponse('Target is not allowed for this device.',403)}
+  const retry=async()=>{const refreshStarted=Date.now(),fresh=await refreshDevice(env,{...row,session_version:mutableVersion},session);timings.refresh=(timings.refresh??0)+(Date.now()-refreshStarted);if(fresh){session=fresh;mutableVersion++;return fresh}return null};
+  const passageStarted=Date.now(),executed=await runSequenceSteps({steps:target.steps,openStep:async step=>executeStoredReader(env,row.owner_id,session,step.readerId,'device_api_passage',retry),wait:async ms=>{timings.configuredDelay=(timings.configuredDelay??0)+ms;await new Promise(resolve=>setTimeout(resolve,ms))}});timings.passage=Date.now()-passageStarted-(timings.configuredDelay??0);
+  const timestamp=new Date().toISOString();await env.DB.prepare('UPDATE device_sessions SET last_used_at=?,updated_at=? WHERE id=? AND owner_id=?').bind(timestamp,timestamp,row.id,row.owner_id).run();await auditDevice(env,row,'use',timestamp);
+  if(target.type==='sequence')await env.DB.prepare('INSERT INTO sequence_events(id,sequence_id,owner_id,outcome,completed_steps,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),target.id,row.owner_id,executed.ok?'accepted':'rejected',executed.completedSteps,timestamp).run();
+  logTiming('device',executed.ok?200:executed.status,executed.ok);if(!executed.ok)return response({error:executed.error,failedStep:executed.failedStep,completedSteps:executed.completedSteps},executed.status);return response({ok:true,message:'Request completed.',completedSteps:executed.completedSteps,timestamp},200);
+ }
+ const clientKey=await ownerId(`open:${request.headers.get('cf-connecting-ip')??'unknown'}`,env.SESSION_ENCRYPTION_KEY),rateKey=`open-rate:${clientKey}`,recentRaw=await env.SESSIONS.get(rateKey);
+ const access=validateExternalOpenRequest({protocol:url.protocol,origin:request.headers.get('origin'),expectedOrigin:url.origin,apiKey:request.headers.get('x-api-key')??'',expectedApiKey:env.OPEN_DOOR_API_KEY,recentAt:recentRaw?Number(recentRaw):null,now});if(!access.ok){logTiming('legacy',access.status,false);return errorResponse(access.error,access.status)}
  await env.SESSIONS.put(rateKey,String(now),{expirationTtl:60});
- const resolveTarget=async(customerId:string,type:'door'|'sequence',nameKey:string)=>{const owner=await ownerId(customerId,env.SESSION_ENCRYPTION_KEY);if(type==='door'){const rows=await env.DB.prepare('SELECT id FROM readers WHERE owner_id=? AND name_key=? AND (config_ciphertext IS NOT NULL OR card_reader>0) LIMIT 2').bind(owner,nameKey).all<{id:string}>();if(rows.results.length>1)return {ambiguous:true as const};return rows.results[0]?{id:rows.results[0].id,type:'door' as const,steps:[{readerId:rows.results[0].id,delayAfterMs:0}]}:null}const rows=await env.DB.prepare('SELECT id FROM sequences WHERE owner_id=? AND name_key=? LIMIT 2').bind(owner,nameKey).all<{id:string}>();if(rows.results.length>1)return {ambiguous:true as const};if(!rows.results[0])return null;const stored=await storedSequenceSteps(env,owner,rows.results[0].id);return stored?{id:stored.id,type:'sequence' as const,steps:stored.steps}:null};
+ const resolveTarget=async(customerId:string,type:'door'|'sequence',nameKey:string)=>resolveNamedTarget(env,await ownerId(customerId,env.SESSION_ENCRYPTION_KEY),type,nameKey);
  const executeTarget=async(auth:{customerId:string;accessToken:string;cookie?:string},target:{id:string;type:'door'|'sequence';steps:Array<{readerId:string;delayAfterMs:number}>})=>{const owner=await ownerId(auth.customerId,env.SESSION_ENCRYPTION_KEY),credentials={customerId:auth.customerId,accessToken:auth.accessToken,upstreamCookie:auth.cookie};const executed=await runSequenceSteps({steps:target.steps,openStep:async step=>executeStoredReader(env,owner,credentials,step.readerId,'api_passage'),wait:ms=>new Promise(resolve=>setTimeout(resolve,ms))});if(target.type==='sequence'){const timestamp=new Date().toISOString();await env.DB.prepare('INSERT INTO sequence_events(id,sequence_id,owner_id,outcome,completed_steps,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),target.id,owner,executed.ok?'accepted':'rejected',executed.completedSteps,timestamp).run()}return executed};
- const result=await runOpenDoorFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body,resolveTarget,executeTarget,enabled:true,authorizationId:env.PASSAGE_AUTHORIZATION_ID});
- console.log(JSON.stringify({event:'open_door_result',status:result.status,ok:result.ok}));
+ const result=await runOpenDoorFlow({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,body,resolveTarget,executeTarget,enabled:true,authorizationId:env.PASSAGE_AUTHORIZATION_ID,onTiming:(stage:string,duration:number)=>{timings[stage]=duration}});
+ logTiming('legacy',result.status,result.ok);
  if(!result.ok)return response({error:result.error,...(result.failedStep?{failedStep:result.failedStep,completedSteps:result.completedSteps}:{})},result.status);
  return response({ok:true,message:'Request completed.',completedSteps:result.completedSteps,timestamp:new Date().toISOString()},200);
 }
@@ -228,15 +301,19 @@ export default { async fetch(request:Request,env:Env):Promise<Response> {
   if(path==='/api/readers'&&request.method==='POST')return await createReader(request,env);
   if(path==='/api/sequences'&&request.method==='GET')return await listSequences(request,env);
   if(path==='/api/sequences'&&request.method==='POST')return await saveSequence(request,env);
+  if(path==='/api/device-sessions'&&request.method==='GET')return await listDeviceSessions(request,env);
+  if(path==='/api/device-sessions'&&request.method==='POST')return await createDeviceSession(request,env);
   if(path==='/api/default'&&request.method==='GET')return await defaultSelection(request,env);
   if(path==='/api/default'&&request.method==='PUT')return await setDefaultSelection(request,env);
   const sequenceMatch=path.match(/^\/api\/sequences\/([0-9a-f-]{36})(?:\/(run))?$/i);
   if(sequenceMatch){const sequenceId=sequenceMatch[1];if(sequenceMatch[2]==='run'&&request.method==='POST')return await runStoredSequence(request,env,sequenceId);if(!sequenceMatch[2]&&request.method==='PATCH')return await saveSequence(request,env,sequenceId);if(!sequenceMatch[2]&&request.method==='DELETE')return await deleteSequence(request,env,sequenceId)}
+  const deviceMatch=path.match(/^\/api\/device-sessions\/([0-9a-f-]{36})(?:\/(rotate|reauthorize))?$/i);
+  if(deviceMatch){const id=deviceMatch[1],action=deviceMatch[2] as 'rotate'|'reauthorize'|undefined;if(!action&&request.method==='PATCH')return await mutateDeviceSession(request,env,id);if(!action&&request.method==='DELETE')return await mutateDeviceSession(request,env,id);if(action&&request.method==='POST')return await mutateDeviceSession(request,env,id,action)}
   const readerMatch=path.match(/^\/api\/readers\/([0-9a-f-]{36})(?:\/(door|passage))?$/i);
   if(readerMatch){const readerId=readerMatch[1];if((readerMatch[2]==='door'||readerMatch[2]==='passage')&&request.method==='POST')return await passage(request,env,readerId);if(!readerMatch[2]&&request.method==='GET')return await getReader(request,env,readerId);if(!readerMatch[2]&&request.method==='PATCH')return await renameReader(request,env,readerId);if(!readerMatch[2]&&request.method==='DELETE')return await deleteReader(request,env,readerId)}
   if(path==='/api/logout'&&request.method==='POST'){const active=await getSession(request,env);if(!active)return response({authenticated:false});const invalid=await verifyMutation(request,active,env);if(invalid)return invalid;return await logout(request,env)}
   if(path.startsWith('/api/'))return errorResponse('Not found',404);
   if(path==='/readers'||path==='/readers/new'||/^\/readers\/[0-9a-f-]{36}$/i.test(path))return env.ASSETS.fetch(new Request(new URL('/index.html',url),request));
   return env.ASSETS.fetch(request);
- } catch(error) { console.error(JSON.stringify({event:'request_failed',message:error instanceof Error?error.message:'unknown'})); return errorResponse('Ett oväntat fel inträffade.',500); }
+ } catch { console.error(JSON.stringify({event:'request_failed'})); return errorResponse('Ett oväntat fel inträffade.',500); }
 }};
