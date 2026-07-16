@@ -6,6 +6,8 @@ Base URL:
 https://brp-personal-client.liquifycd.workers.dev
 ```
 
+The hostname is a legacy production identifier intentionally retained after the project was renamed to **No-Comment STC Client**. The project is unofficial and unaffiliated with STC or BRP Systems. Use the API only for your own authorized account and readers.
+
 The web app uses same-origin session cookies. Mutating session routes require the `x-csrf-token` returned by `GET /api/session`. Responses never expose credentials, tokens, cookies, customer IDs, `major`, `minor`, or resolved reader codes.
 
 ## Fast iPhone Shortcut API (recommended)

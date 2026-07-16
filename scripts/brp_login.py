@@ -51,8 +51,14 @@ def request_json(
 def main() -> None:
     username = os.getenv("BRP_USERNAME") or input("BRP username: ").strip()
     password = os.getenv("BRP_PASSWORD") or getpass.getpass("BRP password: ")
-    if not username or not password:
-        raise RuntimeError("Username and password are required")
+    reader_value = os.getenv("BRP_AUTHORIZED_READER_ID", "").strip()
+    if not username or not password or not reader_value:
+        raise RuntimeError(
+            "BRP_USERNAME, BRP_PASSWORD, and BRP_AUTHORIZED_READER_ID are required"
+        )
+    if not reader_value.isdecimal() or int(reader_value) <= 0:
+        raise RuntimeError("BRP_AUTHORIZED_READER_ID must be a positive integer")
+    authorized_reader_id = int(reader_value)
 
     with requests.Session() as session:
         session.headers.update(COMMON_HEADERS)
@@ -108,7 +114,7 @@ def main() -> None:
         # Session cookies and the Authorization header set above are reused
         # automatically for this request.
         passagetry_payload: dict[str, Any] = {
-            "cardReader": 900001,
+            "cardReader": authorized_reader_id,
             "printTicket": True,
         }
 

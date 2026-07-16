@@ -1,0 +1,61 @@
+No-Comment Personal Use License
+Version 1.0, 17 July 2026
+
+Copyright © 2026 LiquifyCD. All rights reserved.
+
+1. Definitions
+
+"Software" means the source code, object code, documentation, assets, and other materials distributed with this license. "You" means the individual exercising rights under this license.
+
+2. Limited license grant
+
+Subject to continuous compliance with this license, LiquifyCD grants You a limited, revocable, non-exclusive, non-transferable, and non-sublicensable license to download, install, and run an unmodified copy of the Software solely for Your own personal, noncommercial use.
+
+Viewing the Software on GitHub and using GitHub's platform-provided fork function are permitted only as technically necessary to inspect or privately use the unmodified Software. A fork does not grant any right to modify, redistribute, publish, or commercially exploit the Software.
+
+3. Restrictions
+
+You must not, directly or indirectly:
+
+a. modify, adapt, translate, transform, or create derivative works from the Software;
+b. sell, rent, lease, sublicense, monetize, commercially exploit, or use the Software for any business, professional, revenue-generating, or other commercial purpose;
+c. redistribute, publish, mirror, transmit, make available, or provide copies of the Software or any substantial portion of it to another person, except for GitHub's platform-provided fork function as limited by Section 2;
+d. remove or alter copyright, license, attribution, or other proprietary notices;
+e. use the Software to access an account, reader, facility, system, or data without the owner's express authorization, to share credentials, to bypass security controls, or to violate applicable law or third-party terms; or
+f. represent the Software as affiliated with, endorsed by, or supported by STC, BRP Systems, LiquifyCD, or any other party when no such relationship exists.
+
+No rights are granted by implication, estoppel, or otherwise. All rights not expressly granted are reserved by LiquifyCD.
+
+4. Third-party materials
+
+Third-party components included with or used by the Software are not relicensed under this license. They remain subject to their respective licenses and notices, as identified in THIRD_PARTY_NOTICES.md or their source distributions.
+
+5. Ownership
+
+The Software is licensed, not sold. LiquifyCD retains all right, title, and interest in the Software, including all intellectual-property rights, excluding third-party materials.
+
+6. Automatic termination
+
+This license terminates automatically and immediately if You breach any term. On termination, You must stop using the Software and delete all copies under Your possession or control, subject to any non-waivable rights under applicable law. Sections 3 through 10 survive termination.
+
+7. Assumption of risk
+
+You are solely responsible for deciding whether and how to use the Software, obtaining all required permissions, protecting credentials, validating configuration, and complying with applicable law and third-party terms. You assume all risks arising from installation, configuration, operation, and use, including physical-access, account, security, data, service, and property risks.
+
+8. Disclaimer of warranties
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITH ALL FAULTS AND WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, SECURITY, AVAILABILITY, OR ERROR-FREE OPERATION.
+
+9. Limitation of liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, LIQUIFYCD AND ITS CONTRIBUTORS WILL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL LOSS OR DAMAGE, OR FOR LOSS OF PROFITS, REVENUE, DATA, ACCESS, USE, GOODWILL, OR BUSINESS INTERRUPTION, ARISING FROM OR RELATED TO THE SOFTWARE OR THIS LICENSE, UNDER ANY THEORY OF LIABILITY, EVEN IF ADVISED OF THE POSSIBILITY. WHERE LIABILITY CANNOT LAWFULLY BE EXCLUDED, THE TOTAL AGGREGATE LIABILITY WILL NOT EXCEED THE GREATER OF THE AMOUNT YOU PAID LIQUIFYCD FOR THE SOFTWARE OR EUR 10. NOTHING IN THIS LICENSE EXCLUDES LIABILITY THAT CANNOT BE EXCLUDED UNDER APPLICABLE LAW.
+
+10. Indemnity
+
+To the maximum extent permitted by applicable law, You will defend, indemnify, and hold harmless LiquifyCD and its contributors from claims, liabilities, damages, losses, and reasonable costs arising from Your use or misuse of the Software, Your breach of this license, or Your violation of another person's rights or applicable law.
+
+11. General
+
+If any provision is unenforceable, it will be limited to the minimum extent necessary and the remaining provisions will continue in effect. Failure to enforce a provision is not a waiver. This license is the entire agreement concerning the Software unless LiquifyCD provides a separate written agreement.
+
+This is a custom source-available license, not an open-source license. It may not achieve every intended result in every jurisdiction. Independent legal review is recommended.
