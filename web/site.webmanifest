@@ -2,7 +2,7 @@
   "id": "/",
   "name": "No-Comment STC Client",
   "short_name": "Open",
-  "description": "Minimal authorized BRP door client.",
+  "description": "Minimal authorized STC door client.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -21,7 +21,7 @@ export default function Login() {
 
   return <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.page}>
     <View style={styles.card}>
-      <Text style={styles.title}>BRP Personal</Text>
+      <Text style={styles.title}>No-Comment STC</Text>
       <Text style={styles.subtitle}>Logga in på ditt eget STC/BRP-konto.</Text>
       <TextInput autoCapitalize="none" autoCorrect={false} placeholder="Användarnamn" value={username} onChangeText={setUsername} style={styles.input} />
       <TextInput autoCapitalize="none" placeholder="Lösenord" secureTextEntry value={password} onChangeText={setPassword} style={styles.input} />

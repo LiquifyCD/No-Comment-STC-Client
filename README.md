@@ -35,6 +35,8 @@ https://brp-personal-client.liquifycd.workers.dev
 
 `PASSAGE_ENABLED` and all other existing enabled/disabled deployment values are preserved.
 
+Existing native bundle identifiers, URL scheme, and secure-storage key names are also retained so installed apps and saved sessions keep working; they are compatibility identifiers, not the displayed product name.
+
 ## Local setup
 
 ```powershell
