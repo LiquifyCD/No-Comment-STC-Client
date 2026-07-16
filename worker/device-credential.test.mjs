@@ -15,6 +15,7 @@ test('fast request accepts exactly one named target and no credentials',()=>{
 
 test('device input limits expiry and allowlist',()=>{
   assert.equal(validateDeviceInput({name:'My iPhone',expiresInDays:30,targets:[]}).ok,true);
+  assert.equal(validateDeviceInput({name:'My iPhone',expiresInDays:'never',targets:[]}).ok,true);
   assert.equal(validateDeviceInput({name:'My iPhone',expiresInDays:91}).ok,false);
   assert.equal(validateDeviceInput({name:'My iPhone',targets:[{type:'door',id:'bad'}]}).ok,false);
 });

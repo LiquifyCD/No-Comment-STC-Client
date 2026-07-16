@@ -33,7 +33,7 @@ Content-Type: application/json
 {"sequenceName":"Main then sluss"}
 ```
 
-The fast path normally skips app configuration and login, reusing the encrypted server session. Each credential has an expiry, last-used timestamp, optional target allowlist, one-second limit, and audit timestamps. It can be renamed, rotated, reauthorized, or revoked in **Devices**. Rotation invalidates the old value immediately. If upstream refresh is not verified/configured, an expired BRP session returns `401` and must be reauthorized from a current web login.
+The fast path normally skips app configuration and login, reusing the encrypted server session. A credential can expire after 30, 60, or 90 days, or be set to **Never**. Never applies only to the device credential: the encrypted BRP session may still require reauthorization. Each credential has a last-used timestamp, optional target allowlist, one-second limit, and audit timestamps. It can be renamed, rotated, reauthorized, or revoked in **Devices**. Rotation invalidates the old value immediately. If upstream refresh is not verified/configured, an expired BRP session returns `401` and must be reauthorized from a current web login.
 
 Open responses are never cached or replayed. A BRP `401` permits at most one refresh and one retry of that same reader request; concurrent refresh is guarded by a database lock. Timing logs contain only mode, status, total milliseconds, and stage durations—never identities, target names, credentials, or upstream response data.
 

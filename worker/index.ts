@@ -30,6 +30,7 @@ type DeviceUpstreamSession = PassageCredentials & {refreshToken?:string;expiresA
 const JSON_HEADERS = { 'content-type':'application/json', 'cache-control':'no-store', 'x-content-type-options':'nosniff' };
 const UPSTREAM_HEADERS = { accept:'application/json', 'content-type':'application/json', 'x-request-source':'mobilityapp', 'accept-language':'sv-SE' };
 const REQUEST_ID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const NEVER_EXPIRES_AT=253402300799000;
 
 function response(data:unknown,status=200,extra:HeadersInit={}) { return new Response(JSON.stringify(data),{status,headers:{...JSON_HEADERS,...extra,'content-security-policy':"default-src 'none'; frame-ancestors 'none'"}}); }
 function errorResponse(error:string,status:number) { return response({error},status); }
@@ -133,18 +134,18 @@ async function listDeviceSessions(request:Request,env:Env) {
  const auth=await requireSession(request,env);if('error'in auth)return auth.error;
  const rows=await env.DB.prepare('SELECT id,owner_id,name,expires_at,created_at,updated_at,last_used_at,revoked_at FROM device_sessions WHERE owner_id=? ORDER BY created_at DESC').bind(auth.owner).all<DeviceSessionRow>();
  const targets=await env.DB.prepare("SELECT dst.device_session_id,dst.target_type,CASE dst.target_type WHEN 'door' THEN r.name ELSE s.name END AS target_name FROM device_session_targets dst LEFT JOIN readers r ON dst.target_type='door' AND r.id=dst.target_id LEFT JOIN sequences s ON dst.target_type='sequence' AND s.id=dst.target_id JOIN device_sessions ds ON ds.id=dst.device_session_id WHERE ds.owner_id=?").bind(auth.owner).all<{device_session_id:string;target_type:'door'|'sequence';target_name:string|null}>();
- return response({devices:rows.results.map(row=>({id:row.id,name:row.name,expiresAt:new Date(row.expires_at).toISOString(),createdAt:row.created_at,updatedAt:row.updated_at,lastUsedAt:row.last_used_at,revokedAt:row.revoked_at,targets:targets.results.filter(target=>target.device_session_id===row.id&&target.target_name).map(target=>({type:target.target_type,name:target.target_name}))}))});
+ return response({devices:rows.results.map(row=>({id:row.id,name:row.name,expiresAt:row.expires_at===NEVER_EXPIRES_AT?null:new Date(row.expires_at).toISOString(),createdAt:row.created_at,updatedAt:row.updated_at,lastUsedAt:row.last_used_at,revokedAt:row.revoked_at,targets:targets.results.filter(target=>target.device_session_id===row.id&&target.target_name).map(target=>({type:target.target_type,name:target.target_name}))}))});
 }
 
 async function createDeviceSession(request:Request,env:Env) {
  const auth=await requireSession(request,env);if('error'in auth)return auth.error;const invalid=await verifyMutation(request,auth.active,env);if(invalid)return invalid;
  let body:unknown;try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}const valid=validateDeviceInput(body);if(!valid.ok)return errorResponse(valid.error,valid.status);
  for(const target of valid.targets){const table=target.type==='door'?'readers':'sequences';const owned=await env.DB.prepare(`SELECT id FROM ${table} WHERE id=? AND owner_id=?`).bind(target.id,auth.owner).first();if(!owned)return errorResponse('Invalid target allowlist.',400)}
- const generated=createDeviceCredential(),tokenHash=await hashDeviceSecret(generated.secret,env.SESSION_ENCRYPTION_KEY),now=Date.now(),timestamp=new Date(now).toISOString(),expiresAt=now+valid.expiresInDays*86400000;
+ const generated=createDeviceCredential(),tokenHash=await hashDeviceSecret(generated.secret,env.SESSION_ENCRYPTION_KEY),now=Date.now(),timestamp=new Date(now).toISOString(),expiresAt=valid.expiresInDays==='never'?NEVER_EXPIRES_AT:now+valid.expiresInDays*86400000;
  const upstream:DeviceUpstreamSession={customerId:auth.active.data.customerId,accessToken:auth.active.data.accessToken,refreshToken:auth.active.data.refreshToken,upstreamCookie:auth.active.data.upstreamCookie,expiresAt:auth.active.data.expiresAt},ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);
  const statements=[env.DB.prepare('INSERT INTO device_sessions(id,owner_id,name,name_key,token_hash,session_ciphertext,upstream_expires_at,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(generated.id,auth.owner,valid.name,valid.nameKey,tokenHash,ciphertext,upstream.expiresAt,expiresAt,timestamp,timestamp),...valid.targets.map(target=>env.DB.prepare('INSERT INTO device_session_targets(device_session_id,target_type,target_id) VALUES(?,?,?)').bind(generated.id,target.type,target.id))];
  try{await env.DB.batch(statements)}catch(error){if(isUniqueError(error))return errorResponse('A device with that name already exists.',409);throw error}
- await auditDevice(env,{id:generated.id,owner_id:auth.owner},'create',timestamp);return response({device:{id:generated.id,name:valid.name,expiresAt:new Date(expiresAt).toISOString()},credential:generated.credential},201);
+ await auditDevice(env,{id:generated.id,owner_id:auth.owner},'create',timestamp);return response({device:{id:generated.id,name:valid.name,expiresAt:expiresAt===NEVER_EXPIRES_AT?null:new Date(expiresAt).toISOString()},credential:generated.credential},201);
 }
 
 async function mutateDeviceSession(request:Request,env:Env,id:string,action?:'rotate'|'reauthorize') {
