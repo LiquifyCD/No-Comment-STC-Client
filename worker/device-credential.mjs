@@ -40,7 +40,7 @@ export function validateDeviceTargetBody(body){
 export function validateDeviceInput(body){
   if(!body||typeof body!=='object'||Array.isArray(body))return {ok:false,status:400,error:'Invalid request.'};
   const name=typeof body.name==='string'?normalize(body.name):'';if(!NAME.test(name))return {ok:false,status:400,error:'Invalid device name.'};
-  const expiresInDays=Number(body.expiresInDays??30);if(!Number.isInteger(expiresInDays)||expiresInDays<1||expiresInDays>90)return {ok:false,status:400,error:'Expiry must be 1-90 days.'};
+  const expiresInDays=body.expiresInDays==='never'?'never':Number(body.expiresInDays??30);if(expiresInDays!=='never'&&(!Number.isInteger(expiresInDays)||expiresInDays<1||expiresInDays>90))return {ok:false,status:400,error:'Expiry must be never or 1-90 days.'};
   const targets=body.targets??[];if(!Array.isArray(targets)||targets.length>100)return {ok:false,status:400,error:'Invalid target allowlist.'};
   for(const target of targets)if(!target||!['door','sequence'].includes(target.type)||typeof target.id!=='string'||!/^[0-9a-f-]{36}$/i.test(target.id))return {ok:false,status:400,error:'Invalid target allowlist.'};
   return {ok:true,name,nameKey:name.toLocaleLowerCase('sv-SE'),expiresInDays,targets};
