@@ -48,6 +48,14 @@ npx wrangler deploy --dry-run
 
 Tests use mocked or local-only data and must never contact a real BRP/STC endpoint or reader.
 
+## App icon
+
+The native iPhone icon and PWA/Home Screen icons are generated from `assets/icon.png`. Replace them from a square source image with:
+
+```powershell
+python scripts/generate_icons.py "C:\path\to\icon.png"
+```
+
 The optional Python helper requires `requests` and explicit values supplied outside source control:
 
 ```powershell

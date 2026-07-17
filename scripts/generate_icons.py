@@ -1,36 +1,56 @@
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
-from PIL import Image, ImageDraw
 
-ROOT = Path(__file__).resolve().parents[1] / "web"
-BG = "#08090d"
-SURFACE = "#171b28"
-ACCENT = "#929dff"
-LIGHT = "#c9ceff"
+from PIL import Image, ImageOps
 
 
-def icon(size: int, safe: bool = False) -> Image.Image:
-    image = Image.new("RGB", (size, size), BG)
-    draw = ImageDraw.Draw(image)
-    scale = size / 512
-    inset = 88 if safe else 56
-    radius = 96 if safe else 112
-
-    def box(values):
-        return tuple(round(value * scale) for value in values)
-
-    draw.rounded_rectangle(box((inset, inset, 512 - inset, 512 - inset)), radius=round(radius * scale), fill=SURFACE)
-    draw.polygon([box((160, 390))[:2], box((160, 144))[:2], box((352, 144))[:2], box((352, 390))[:2], box((300, 390))[:2], box((300, 196))[:2], box((212, 196))[:2], box((212, 390))[:2]], fill=ACCENT)
-    draw.polygon([box((212, 196))[:2], box((316, 220))[:2], box((316, 390))[:2], box((212, 389))[:2]], fill="#10131d")
-    draw.ellipse(box((281, 286, 301, 306)), fill=LIGHT)
-    draw.line(box((132, 410, 380, 410)), fill=ACCENT, width=max(1, round(20 * scale)))
-    return image
+ROOT = Path(__file__).resolve().parents[1]
+ASSETS = ROOT / "assets"
+WEB = ROOT / "web"
+NATIVE_SIZE = 1024
 
 
-for filename, size, safe in (
-    ("apple-touch-icon.png", 180, False),
-    ("icon-192.png", 192, False),
-    ("icon-512.png", 512, False),
-    ("icon-maskable-192.png", 192, True),
-    ("icon-maskable-512.png", 512, True),
-):
-    icon(size, safe).save(ROOT / filename, optimize=True)
+def load_square(source_path: Path) -> Image.Image:
+    with Image.open(source_path) as source:
+        return ImageOps.fit(
+            source.convert("RGB"),
+            (NATIVE_SIZE, NATIVE_SIZE),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+
+
+def save_resized(source: Image.Image, path: Path, size: int) -> None:
+    image = source.resize((size, size), Image.Resampling.LANCZOS)
+    image.save(path, format="PNG", optimize=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate native and PWA app icons.")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        type=Path,
+        default=ASSETS / "icon.png",
+        help="Square source image; defaults to assets/icon.png.",
+    )
+    args = parser.parse_args()
+
+    source = load_square(args.source.resolve())
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    source.save(ASSETS / "icon.png", format="PNG", optimize=True)
+
+    for filename, size in (
+        ("apple-touch-icon.png", 180),
+        ("icon-192.png", 192),
+        ("icon-512.png", 512),
+        ("icon-maskable-192.png", 192),
+        ("icon-maskable-512.png", 512),
+    ):
+        save_resized(source, WEB / filename, size)
+
+
+if __name__ == "__main__":
+    main()
