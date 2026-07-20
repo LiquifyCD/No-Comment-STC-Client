@@ -16,7 +16,8 @@ The layout keeps a compact phone interface, switches to horizontal navigation on
 - Login creates an encrypted, `HttpOnly`, `Secure`, same-site server session.
 - Passwords, bearer/refresh tokens, upstream cookies, customer IDs, and resolved reader codes are never returned to or persisted in the browser.
 - Device credentials are displayed once. Only a keyed hash is stored; reusable upstream sessions remain AES-GCM encrypted server-side.
-- All devices for one owner reference one canonical encrypted upstream session. Login or reauthorization replaces it for every device without storing the BRP username or password.
+- All devices for one owner reference one canonical encrypted upstream session. Login or reauthorization replaces it for every device.
+- Automatic renewal is opt-in. When enabled in **Devices**, the verified BRP username and password are stored together in an AES-GCM-encrypted server-side blob, never returned to the client, and deleted when the feature is disabled or credentials are rejected.
 - Stored `major` and `minor` values are encrypted and never returned.
 - Ownership is derived from the authenticated server session. Mutations require same-origin requests and a session-bound CSRF token.
 - Door and sequence operations use atomic cooldown and replay protection.
@@ -80,7 +81,7 @@ npx wrangler d1 migrations apply brp-personal-client --remote
 npx wrangler deploy
 ```
 
-The Worker includes a bounded cron handler at `0 3,15 * * *` UTC. `PROACTIVE_REFRESH_ENABLED` is deliberately `false`, and the refresh adapter performs no network request because no authorized capture has verified BRP's refresh method, path, headers, request body, cookie handling, response fields, token rotation, or failure semantics. Do not enable or deploy refresh calls until all of those details are verified. Until then, cached access tokens are used until expiry and an expired session returns a fast `401`; sign in and use **Reauthorize** to replace the shared owner session.
+The Worker includes a bounded cron handler at `0 3,15 * * *` UTC. Native refresh remains disabled with `PROACTIVE_REFRESH_ENABLED=false` because its contract has not been verified. The independent `SCHEDULED_REAUTH_ENABLED=true` path instead uses the already verified full-login flow only for owners who explicitly enable automatic renewal in **Devices**. It renews at most every three days, processes at most 12 owners per run, never looks up readers or sends passage requests, and disables itself after rejected credentials. Transient failures retry at the next 12-hour cron run. Door requests still use only the cached session and never login on demand.
 
 Test the disabled scheduled handler locally without contacting BRP:
 

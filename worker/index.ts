@@ -16,6 +16,8 @@ import { constantTimeEqual, createDeviceCredential, hashDeviceSecret, parseDevic
 import { BRP_REFRESH_CONTRACT_VERIFIED, refreshBrpSession } from './brp-refresh.mjs';
 import { isDeviceTargetAllowed, validateDeviceRecord } from './device-access-policy.mjs';
 import { MAX_REFRESH_BATCH, runProactiveRefresh, sessionStatus as ownerSessionStatus } from './owner-session.mjs';
+import { authenticateBrp } from './brp-auth.mjs';
+import { MAX_REAUTH_BATCH, REAUTH_RETRY_MS, nextReauthenticationAt, runScheduledReauthentication } from './scheduled-reauth.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type PassageCredentials = { accessToken:string; customerId:string; upstreamCookie?:string };
@@ -25,7 +27,8 @@ type SequenceRow = { id:string; name:string; created_at:string; updated_at:strin
 type SequenceStepRow = { sequence_id:string; position:number; reader_id:string; reader_name:string; delay_after_ms:number; config_ciphertext?:string };
 type DeviceSessionRow = { id:string;owner_id:string;name:string;token_hash:string;session_ciphertext:string;upstream_expires_at:number;expires_at:number;created_at:string;updated_at:string;last_used_at:string|null;revoked_at:string|null;refresh_lock_until:number|null;session_version:number };
 type DeviceUpstreamSession = PassageCredentials & {refreshToken?:string;expiresAt:number};
-type OwnerSessionRow = { owner_id:string;session_ciphertext:string;upstream_expires_at:number;session_version:number;refresh_lock_until:number|null;last_refresh_at:string|null;refresh_status:'healthy'|'refresh_pending'|'refresh_failed'|'reauthorization_required';last_error:string|null;created_at:string;updated_at:string;active_device_count?:number };
+type OwnerSessionRow = { owner_id:string;session_ciphertext:string;upstream_expires_at:number;session_version:number;refresh_lock_until:number|null;last_refresh_at:string|null;refresh_status:'healthy'|'refresh_pending'|'refresh_failed'|'reauthorization_required';last_error:string|null;created_at:string;updated_at:string;scheduled_reauth_ciphertext:string|null;scheduled_reauth_enabled:0|1;next_reauth_at:number|null;last_reauth_at:string|null;active_device_count?:number };
+type ScheduledCredentials = { username:string;password:string };
 
 const JSON_HEADERS = { 'content-type':'application/json', 'cache-control':'no-store', 'x-content-type-options':'nosniff' };
 const UPSTREAM_HEADERS = { accept:'application/json', 'content-type':'application/json', 'x-request-source':'mobilityapp', 'accept-language':'sv-SE' };
@@ -115,7 +118,9 @@ async function login(request:Request,env:Env) {
  if(!auth.ok)return errorResponse(auth.status===401?'Fel användarnamn eller lösenord.':'Inloggningen misslyckades.',auth.status===401?401:502);
  const data=await auth.json() as {access_token:string;refresh_token?:string;username:string;expires_in:number};
  const session:Session={accessToken:data.access_token,refreshToken:data.refresh_token,customerId:data.username,expiresAt:Date.now()+data.expires_in*1000,upstreamCookie:upstreamCookie(auth.headers)??affinity,csrfToken:crypto.randomUUID()};
- await upsertOwnerSession(env,await ownerId(session.customerId,env.SESSION_ENCRYPTION_KEY),upstreamFromSession(session),'login');
+ const owner=await ownerId(session.customerId,env.SESSION_ENCRYPTION_KEY);await upsertOwnerSession(env,owner,upstreamFromSession(session),'login');
+ const automatic=await env.DB.prepare('SELECT scheduled_reauth_enabled FROM owner_upstream_sessions WHERE owner_id=?').bind(owner).first<{scheduled_reauth_enabled:number}>();
+ if(automatic?.scheduled_reauth_enabled===1){const now=Date.now(),timestamp=new Date(now).toISOString(),credentialsCiphertext=await encryptJson({username:body.username.trim(),password:body.password},env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE owner_upstream_sessions SET scheduled_reauth_ciphertext=?,next_reauth_at=?,last_reauth_at=?,updated_at=? WHERE owner_id=? AND scheduled_reauth_enabled=1').bind(credentialsCiphertext,nextReauthenticationAt(now,session.expiresAt),timestamp,timestamp,owner).run()}
  const id=crypto.randomUUID(),ttl=Math.max(60,Math.min(data.expires_in,604800)); await env.SESSIONS.put(id,await encrypt(session,env.SESSION_ENCRYPTION_KEY),{expirationTtl:ttl});
  return response({authenticated:true},200,{'set-cookie':sessionCookie(id,ttl)});
 }
@@ -151,8 +156,37 @@ async function listDeviceSessions(request:Request,env:Env) {
  const rows=await env.DB.prepare('SELECT id,owner_id,name,expires_at,created_at,updated_at,last_used_at,revoked_at FROM device_sessions WHERE owner_id=? ORDER BY created_at DESC').bind(auth.owner).all<DeviceSessionRow>();
  const targets=await env.DB.prepare("SELECT dst.device_session_id,dst.target_type,CASE dst.target_type WHEN 'door' THEN r.name ELSE s.name END AS target_name FROM device_session_targets dst LEFT JOIN readers r ON dst.target_type='door' AND r.id=dst.target_id LEFT JOIN sequences s ON dst.target_type='sequence' AND s.id=dst.target_id JOIN device_sessions ds ON ds.id=dst.device_session_id WHERE ds.owner_id=?").bind(auth.owner).all<{device_session_id:string;target_type:'door'|'sequence';target_name:string|null}>();
  const ownerSession=await env.DB.prepare('SELECT * FROM owner_upstream_sessions WHERE owner_id=?').bind(auth.owner).first<OwnerSessionRow>(),now=Date.now();
- const shared={sessionStatus:ownerSessionStatus(ownerSession,now),upstreamExpiresAt:ownerSession?new Date(ownerSession.upstream_expires_at).toISOString():null,lastRefreshAt:ownerSession?.last_refresh_at??null};
+ const shared={sessionStatus:ownerSessionStatus(ownerSession,now),upstreamExpiresAt:ownerSession?new Date(ownerSession.upstream_expires_at).toISOString():null,lastRefreshAt:ownerSession?.last_refresh_at??null,scheduledReauthEnabled:ownerSession?.scheduled_reauth_enabled===1,nextReauthAt:ownerSession?.next_reauth_at?new Date(ownerSession.next_reauth_at).toISOString():null,lastReauthAt:ownerSession?.last_reauth_at??null};
  return response({ownerSession:shared,devices:rows.results.map(row=>({id:row.id,name:row.name,expiresAt:row.expires_at===NEVER_EXPIRES_AT?null:new Date(row.expires_at).toISOString(),createdAt:row.created_at,updatedAt:row.updated_at,lastUsedAt:row.last_used_at,revokedAt:row.revoked_at,...shared,targets:targets.results.filter(target=>target.device_session_id===row.id&&target.target_name).map(target=>({type:target.target_type,name:target.target_name}))}))});
+}
+
+async function scheduledReauthSettings(request:Request,env:Env) {
+ const auth=await requireSession(request,env);if('error'in auth)return auth.error;const invalid=await verifyMutation(request,auth.active,env);if(invalid)return invalid;
+ const timestamp=new Date().toISOString();
+ if(request.method==='DELETE'){
+  await env.DB.batch([
+   env.DB.prepare('UPDATE owner_upstream_sessions SET scheduled_reauth_ciphertext=NULL,scheduled_reauth_enabled=0,next_reauth_at=NULL,updated_at=? WHERE owner_id=?').bind(timestamp,auth.owner),
+   env.DB.prepare('INSERT INTO owner_upstream_session_events(id,owner_id,event_type,status,duration_ms,created_at) VALUES(?,?,?,?,NULL,?)').bind(crypto.randomUUID(),auth.owner,'reauthorize','automatic_disabled',timestamp),
+  ]);
+  return response({scheduledReauthEnabled:false,nextReauthAt:null});
+ }
+ const length=Number(request.headers.get('content-length')??0);if(length>2048)return errorResponse('Invalid request.',413);
+ let body:{username?:unknown;password?:unknown};try{body=await request.json() as {username?:unknown;password?:unknown}}catch{return errorResponse('Invalid request.',400)}
+ if(typeof body.username!=='string'||!body.username.trim()||body.username.length>254||typeof body.password!=='string'||!body.password||body.password.length>256)return errorResponse('Email and password are required.',400);
+ const started=Date.now(),result=await authenticateBrp({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,email:body.username.trim(),password:body.password});
+ if(!result.ok)return errorResponse(result.status===401?'Invalid email or password.':'Reauthorization failed.',result.status===401?401:502);
+ if(await ownerId(result.customerId,env.SESSION_ENCRYPTION_KEY)!==auth.owner)return errorResponse('The account does not match the signed-in owner.',403);
+ const upstream:DeviceUpstreamSession={customerId:result.customerId,accessToken:result.accessToken,refreshToken:result.refreshToken,upstreamCookie:result.cookie,expiresAt:result.expiresAt};
+ const [sessionCiphertext,credentialsCiphertext]=await Promise.all([encryptJson(upstream,env.SESSION_ENCRYPTION_KEY),encryptJson({username:body.username.trim(),password:body.password},env.SESSION_ENCRYPTION_KEY)]),now=Date.now(),nextAt=nextReauthenticationAt(now,upstream.expiresAt);
+ const statements=await env.DB.batch([
+  env.DB.prepare("UPDATE owner_upstream_sessions SET session_ciphertext=?,upstream_expires_at=?,session_version=session_version+1,refresh_lock_until=NULL,last_refresh_at=?,refresh_status='healthy',last_error=NULL,scheduled_reauth_ciphertext=?,scheduled_reauth_enabled=1,next_reauth_at=?,last_reauth_at=?,updated_at=? WHERE owner_id=?").bind(sessionCiphertext,upstream.expiresAt,timestamp,credentialsCiphertext,nextAt,timestamp,timestamp,auth.owner),
+  env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,session_version=session_version+1,refresh_lock_until=NULL WHERE owner_id=?').bind(sessionCiphertext,upstream.expiresAt,timestamp,auth.owner),
+  env.DB.prepare('INSERT INTO owner_upstream_session_events(id,owner_id,event_type,status,duration_ms,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),auth.owner,'reauthorize','automatic_enabled',Date.now()-started,timestamp),
+ ]);
+ if(!statements[0].meta.changes)return errorResponse('Shared session not found.',409);
+ const browserSession:Session={...upstream,csrfToken:auth.active.data.csrfToken},ttl=Math.max(60,Math.min(Math.ceil((upstream.expiresAt-now)/1000),604800));
+ await env.SESSIONS.put(auth.active.id,await encrypt(browserSession,env.SESSION_ENCRYPTION_KEY),{expirationTtl:ttl});
+ return response({scheduledReauthEnabled:true,nextReauthAt:new Date(nextAt).toISOString(),lastReauthAt:timestamp});
 }
 
 async function createDeviceSession(request:Request,env:Env) {
@@ -329,6 +363,28 @@ async function proactiveSessionRefresh(env:Env,now=Date.now()) {
  return result;
 }
 
+async function scheduledSessionReauthentication(env:Env,now=Date.now()) {
+ const result=await runScheduledReauthentication<OwnerSessionRow,DeviceUpstreamSession>({
+  enabled:env.SCHEDULED_REAUTH_ENABLED.toLowerCase()==='true',
+  now,
+  limit:MAX_REAUTH_BATCH,
+  listCandidates:async({now:current,limit})=>{
+   const rows=await env.DB.prepare("SELECT ous.*,COUNT(ds.id) AS active_device_count FROM owner_upstream_sessions ous JOIN device_sessions ds ON ds.owner_id=ous.owner_id AND ds.revoked_at IS NULL AND ds.expires_at>? WHERE ous.scheduled_reauth_enabled=1 AND ous.scheduled_reauth_ciphertext IS NOT NULL AND ous.next_reauth_at IS NOT NULL AND ous.next_reauth_at<=? AND (ous.refresh_lock_until IS NULL OR ous.refresh_lock_until<=?) GROUP BY ous.owner_id ORDER BY ous.next_reauth_at ASC LIMIT ?").bind(current,current,current,limit).all<OwnerSessionRow>();
+   return rows.results;
+  },
+  acquire:async(row,lockUntil)=>(await env.DB.prepare("UPDATE owner_upstream_sessions SET refresh_lock_until=?,refresh_status='refresh_pending',updated_at=? WHERE owner_id=? AND session_version=? AND scheduled_reauth_enabled=1 AND next_reauth_at<=? AND (refresh_lock_until IS NULL OR refresh_lock_until<=?)").bind(lockUntil,new Date(now).toISOString(),row.owner_id,row.session_version,now,now).run()).meta.changes>0,
+  decryptCredentials:async row=>await decryptJson<ScheduledCredentials>(row.scheduled_reauth_ciphertext!,env.SESSION_ENCRYPTION_KEY),
+  authenticate:async credentials=>{const auth=await authenticateBrp({fetcher:fetch,baseUrl:env.BRP_BASE_URL,appId:env.BRP_APP_ID,email:credentials.username,password:credentials.password});return auth.ok?{ok:true as const,session:{customerId:auth.customerId,accessToken:auth.accessToken,refreshToken:auth.refreshToken,upstreamCookie:auth.cookie,expiresAt:auth.expiresAt}}:{ok:false as const,status:auth.status}},
+  ownerForCustomer:async customerId=>await ownerId(customerId,env.SESSION_ENCRYPTION_KEY),
+  saveSuccess:async(row,fresh,nextAt)=>{const timestamp=new Date().toISOString(),ciphertext=await encryptJson(fresh,env.SESSION_ENCRYPTION_KEY);const saved=await env.DB.batch([env.DB.prepare("UPDATE owner_upstream_sessions SET session_ciphertext=?,upstream_expires_at=?,session_version=session_version+1,refresh_lock_until=NULL,last_refresh_at=?,refresh_status='healthy',last_error=NULL,next_reauth_at=?,last_reauth_at=?,updated_at=? WHERE owner_id=? AND session_version=? AND scheduled_reauth_enabled=1").bind(ciphertext,fresh.expiresAt,timestamp,nextAt,timestamp,timestamp,row.owner_id,row.session_version),env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,session_version=session_version+1,refresh_lock_until=NULL WHERE owner_id=? AND EXISTS(SELECT 1 FROM owner_upstream_sessions WHERE owner_id=? AND session_version=?)').bind(ciphertext,fresh.expiresAt,timestamp,row.owner_id,row.owner_id,row.session_version+1)]);if(!saved[0].meta.changes)throw new Error('stale_session_version')},
+  saveFailure:async(row,status,error,disable,current)=>{await env.DB.prepare("UPDATE owner_upstream_sessions SET refresh_status=?,last_error=?,scheduled_reauth_enabled=CASE WHEN ? THEN 0 ELSE scheduled_reauth_enabled END,scheduled_reauth_ciphertext=CASE WHEN ? THEN NULL ELSE scheduled_reauth_ciphertext END,next_reauth_at=CASE WHEN ? THEN NULL ELSE ? END,updated_at=? WHERE owner_id=? AND session_version=?").bind(status,error,disable?1:0,disable?1:0,disable?1:0,current+REAUTH_RETRY_MS,new Date(current).toISOString(),row.owner_id,row.session_version).run()},
+  release:async row=>{await env.DB.prepare('UPDATE owner_upstream_sessions SET refresh_lock_until=NULL WHERE owner_id=? AND session_version=?').bind(row.owner_id,row.session_version).run()},
+  audit:async(row,eventType,status,durationMs)=>{await env.DB.prepare('INSERT INTO owner_upstream_session_events(id,owner_id,event_type,status,duration_ms,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),row.owner_id,eventType,status,durationMs,new Date().toISOString()).run()},
+ });
+ console.log(JSON.stringify({event:'scheduled_session_reauthorization',status:result.status,selected:result.selected,renewed:result.renewed,failed:result.failed}));
+ return result;
+}
+
 export default { async fetch(request:Request,env:Env):Promise<Response> {
  try {
   const url=new URL(request.url),path=url.pathname;
@@ -343,6 +399,7 @@ export default { async fetch(request:Request,env:Env):Promise<Response> {
   if(path==='/api/sequences'&&request.method==='POST')return await saveSequence(request,env);
   if(path==='/api/device-sessions'&&request.method==='GET')return await listDeviceSessions(request,env);
   if(path==='/api/device-sessions'&&request.method==='POST')return await createDeviceSession(request,env);
+  if(path==='/api/scheduled-reauth'&&(request.method==='POST'||request.method==='DELETE'))return await scheduledReauthSettings(request,env);
   if(path==='/api/default'&&request.method==='GET')return await defaultSelection(request,env);
   if(path==='/api/default'&&request.method==='PUT')return await setDefaultSelection(request,env);
   const sequenceMatch=path.match(/^\/api\/sequences\/([0-9a-f-]{36})(?:\/(run))?$/i);
@@ -356,4 +413,4 @@ export default { async fetch(request:Request,env:Env):Promise<Response> {
   if(path==='/readers'||path==='/readers/new'||/^\/readers\/[0-9a-f-]{36}$/i.test(path))return env.ASSETS.fetch(new Request(new URL('/index.html',url),request));
   return env.ASSETS.fetch(request);
  } catch { console.error(JSON.stringify({event:'request_failed'})); return errorResponse('Ett oväntat fel inträffade.',500); }
- }, async scheduled(_controller:ScheduledController,env:Env,_ctx:ExecutionContext):Promise<void> { await proactiveSessionRefresh(env); }} satisfies ExportedHandler<Env>;
+ }, async scheduled(_controller:ScheduledController,env:Env,_ctx:ExecutionContext):Promise<void> { await proactiveSessionRefresh(env);await scheduledSessionReauthentication(env); }} satisfies ExportedHandler<Env>;

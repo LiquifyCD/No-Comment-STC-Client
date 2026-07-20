@@ -13,7 +13,8 @@
     "BRP_BASE_URL": "https://stc.brpsystems.com/brponline/api/ver3",
     "BRP_APP_ID": "383",
     "PASSAGE_ENABLED": "true",
-    "PROACTIVE_REFRESH_ENABLED": "false"
+    "PROACTIVE_REFRESH_ENABLED": "false",
+    "SCHEDULED_REAUTH_ENABLED": "true"
   },
   "triggers": { "crons": ["0 3,15 * * *"] },
   "secrets": { "required": ["SESSION_ENCRYPTION_KEY", "PASSAGE_AUTHORIZATION_ID", "READER_CATALOG", "OPEN_DOOR_API_KEY"] },

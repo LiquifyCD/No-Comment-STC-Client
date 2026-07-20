@@ -12,7 +12,7 @@ The web app uses same-origin session cookies. Mutating session routes require th
 
 ## Fast iPhone Shortcut API (recommended)
 
-Sign in to the web app once, open **Devices**, create an expiring device credential, and copy it when shown. The Worker stores only its keyed hash. The BRP access/refresh tokens and cookie remain encrypted server-side; the password is never stored.
+Sign in to the web app once, open **Devices**, create an expiring device credential, and copy it when shown. The Worker stores only its keyed hash. The BRP access/refresh tokens and cookie remain encrypted server-side. A password is stored only if the owner separately opts in to automatic renewal.
 
 In Apple Shortcuts, add **Get Contents of URL** with these exact values:
 
@@ -41,14 +41,18 @@ Open responses are never cached or replayed. Expired, invalid, or reauthorizatio
 
 ## Proactive session renewal
 
-The Worker is scheduled for `03:00` and `15:00` UTC. A run is bounded to 12 active owner sessions expiring within 36 hours, uses versioned locks to prevent concurrent refresh-token use, and never performs reader lookup or passage requests. The Devices view exposes only `healthy`, `refresh pending`, `refresh failed`, or `reauthorization required`, upstream expiry, and the last successful refresh timestamp.
+The Worker is scheduled for `03:00` and `15:00` UTC. Both renewal strategies use versioned locks, process at most 12 active owner sessions per run, and never perform reader lookup or passage requests. The Devices view exposes only safe renewal state and timestamps.
 
-Proactive renewal is currently safe-disabled with `PROACTIVE_REFRESH_ENABLED=false`. The refresh adapter makes zero network calls until an authorized capture verifies the exact BRP refresh method, path, headers, body, cookie behavior, response fields, token rotation, and failure behavior. No username or password is retained for cron jobs.
+Native token refresh remains safe-disabled with `PROACTIVE_REFRESH_ENABLED=false`; the refresh adapter still makes zero network calls until its exact contract is verified.
+
+Automatic renewal uses the verified full-login flow instead. In **Devices**, the owner explicitly supplies their BRP email and password to `POST /api/scheduled-reauth`. The Worker verifies that login belongs to the current owner, encrypts the credentials server-side with AES-GCM, replaces the shared session, and schedules the next login for no later than three days or 36 hours before token expiry. `DELETE /api/scheduled-reauth` disables the feature and deletes the encrypted credential blob. Both routes require the authenticated same-origin session and CSRF token.
+
+`SCHEDULED_REAUTH_ENABLED=true` permits this opt-in scheduler. Each cron run processes at most 12 due owners. A rejected password disables automatic renewal; a transient upstream failure is retried after 12 hours. Credentials and upstream error bodies are never logged or returned. The scheduler never performs reader lookup or passage requests, and the fast door endpoint never waits for login.
 
 `GET /api/device-sessions` includes an owner-level status object and repeats it on each device for compatibility:
 
 ```json
-{"ownerSession":{"sessionStatus":"healthy","upstreamExpiresAt":"2026-07-20T12:00:00.000Z","lastRefreshAt":null},"devices":[]}
+{"ownerSession":{"sessionStatus":"healthy","upstreamExpiresAt":"2026-07-20T12:00:00.000Z","lastRefreshAt":null,"scheduledReauthEnabled":true,"nextReauthAt":"2026-07-18T12:00:00.000Z","lastReauthAt":"2026-07-15T12:00:00.000Z"},"devices":[]}
 ```
 
 Local cron test:
