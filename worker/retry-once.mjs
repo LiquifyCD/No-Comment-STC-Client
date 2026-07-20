@@ -1,1 +1,0 @@
-export async function sendWithOne401Retry({send,refresh}){let result=await send();if(result.ok||result.status!==401||!refresh)return result;const fresh=await refresh();if(!fresh)return result;return await send(fresh)}

@@ -1,18 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {refreshBrpSession} from './brp-refresh.mjs';
+import {BRP_REFRESH_CONTRACT_VERIFIED,refreshBrpSession} from './brp-refresh.mjs';
 
-test('refresh is disabled until an observed path is configured',async()=>{
-  let calls=0;const result=await refreshBrpSession({fetcher:async()=>{calls++;throw new Error('unexpected')},baseUrl:'https://mock.invalid',refreshToken:'refresh',customerId:'7'});
-  assert.equal(result.ok,false);assert.equal(calls,0);
-});
-
-test('refresh accepts a mocked same-customer response without exposing credentials',async()=>{
-  const calls=[];const result=await refreshBrpSession({fetcher:async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify({username:'7',access_token:'new',refresh_token:'next',expires_in:3600}),{status:200,headers:{'set-cookie':'GCLB=next; Secure'}})},baseUrl:'https://mock.invalid',path:'/auth/refresh',refreshToken:'old',currentCookie:'GCLB=old',customerId:'7',now:()=>1000});
-  assert.equal(result.ok,true);assert.equal(result.accessToken,'new');assert.equal(result.expiresAt,3601000);assert.equal(calls.length,1);
-});
-
-test('refresh rejects a mocked customer mismatch',async()=>{
-  const result=await refreshBrpSession({fetcher:async()=>new Response(JSON.stringify({username:'8',access_token:'new'}),{status:200}),baseUrl:'https://mock.invalid',path:'/auth/refresh',refreshToken:'old',customerId:'7'});
-  assert.equal(result.ok,false);
+test('unverified refresh contract is disabled and performs no network request',async()=>{
+  const originalFetch=globalThis.fetch;
+  let calls=0;
+  globalThis.fetch=async()=>{calls++;throw new Error('unexpected network request')};
+  try{
+    const result=await refreshBrpSession({customerId:'7',accessToken:'access',refreshToken:'refresh',expiresAt:Date.now()+60_000});
+    assert.equal(BRP_REFRESH_CONTRACT_VERIFIED,false);
+    assert.deepEqual(result,{ok:false,status:501,error:'Refresh contract unavailable.',reason:'contract_unavailable'});
+    assert.equal(calls,0);
+  }finally{globalThis.fetch=originalFetch}
 });

@@ -13,10 +13,9 @@ import { validateExternalOpenRequest } from './external-api-policy.mjs';
 import { runSequenceSteps, validateSequenceInput } from './sequence-model.mjs';
 import { getDefaultSelection, resolveSequenceReaders } from './sequence-store.mjs';
 import { constantTimeEqual, createDeviceCredential, hashDeviceSecret, parseDeviceCredential, validateDeviceInput, validateDeviceTargetBody } from './device-credential.mjs';
-import { refreshBrpSession } from './brp-refresh.mjs';
+import { BRP_REFRESH_CONTRACT_VERIFIED, refreshBrpSession } from './brp-refresh.mjs';
 import { isDeviceTargetAllowed, validateDeviceRecord } from './device-access-policy.mjs';
-import { coordinateRefresh } from './refresh-coordinator.mjs';
-import { sendWithOne401Retry } from './retry-once.mjs';
+import { MAX_REFRESH_BATCH, runProactiveRefresh, sessionStatus as ownerSessionStatus } from './owner-session.mjs';
 
 type Session = { accessToken:string; refreshToken?:string; customerId:string; expiresAt:number; upstreamCookie?:string; csrfToken:string };
 type PassageCredentials = { accessToken:string; customerId:string; upstreamCookie?:string };
@@ -26,6 +25,7 @@ type SequenceRow = { id:string; name:string; created_at:string; updated_at:strin
 type SequenceStepRow = { sequence_id:string; position:number; reader_id:string; reader_name:string; delay_after_ms:number; config_ciphertext?:string };
 type DeviceSessionRow = { id:string;owner_id:string;name:string;token_hash:string;session_ciphertext:string;upstream_expires_at:number;expires_at:number;created_at:string;updated_at:string;last_used_at:string|null;revoked_at:string|null;refresh_lock_until:number|null;session_version:number };
 type DeviceUpstreamSession = PassageCredentials & {refreshToken?:string;expiresAt:number};
+type OwnerSessionRow = { owner_id:string;session_ciphertext:string;upstream_expires_at:number;session_version:number;refresh_lock_until:number|null;last_refresh_at:string|null;refresh_status:'healthy'|'refresh_pending'|'refresh_failed'|'reauthorization_required';last_error:string|null;created_at:string;updated_at:string;active_device_count?:number };
 
 const JSON_HEADERS = { 'content-type':'application/json', 'cache-control':'no-store', 'x-content-type-options':'nosniff' };
 const UPSTREAM_HEADERS = { accept:'application/json', 'content-type':'application/json', 'x-request-source':'mobilityapp', 'accept-language':'sv-SE' };
@@ -54,6 +54,32 @@ function isUniqueError(error:unknown) { return error instanceof Error && /UNIQUE
 function readerCatalog(env:Env) { return parseReaderCatalog(env.READER_CATALOG,0); }
 function bearer(request:Request) { const value=request.headers.get('authorization')??'';return value.startsWith('Bearer ')?value.slice(7):''; }
 function auditDevice(env:Env,row:Pick<DeviceSessionRow,'id'|'owner_id'>,eventType:string,at=new Date().toISOString()) { return env.DB.prepare('INSERT INTO device_session_events(id,device_session_id,owner_id,event_type,created_at) VALUES(?,?,?,?,?)').bind(crypto.randomUUID(),row.id,row.owner_id,eventType,at).run(); }
+function upstreamFromSession(session:Session):DeviceUpstreamSession { return {customerId:session.customerId,accessToken:session.accessToken,refreshToken:session.refreshToken,upstreamCookie:session.upstreamCookie,expiresAt:session.expiresAt}; }
+
+async function upsertOwnerSession(env:Env,owner:string,upstream:DeviceUpstreamSession,eventType:'login'|'reauthorize'|'legacy_migration') {
+ const timestamp=new Date().toISOString(),ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);
+ await env.DB.batch([
+  env.DB.prepare("INSERT INTO owner_upstream_sessions(owner_id,session_ciphertext,upstream_expires_at,session_version,refresh_lock_until,last_refresh_at,refresh_status,last_error,created_at,updated_at) VALUES(?,?,?,1,NULL,NULL,'healthy',NULL,?,?) ON CONFLICT(owner_id) DO UPDATE SET session_ciphertext=excluded.session_ciphertext,upstream_expires_at=excluded.upstream_expires_at,session_version=owner_upstream_sessions.session_version+1,refresh_lock_until=NULL,last_refresh_at=NULL,refresh_status='healthy',last_error=NULL,updated_at=excluded.updated_at").bind(owner,ciphertext,upstream.expiresAt,timestamp,timestamp),
+  env.DB.prepare('INSERT INTO owner_upstream_session_events(id,owner_id,event_type,status,duration_ms,created_at) VALUES(?,?,?,?,NULL,?)').bind(crypto.randomUUID(),owner,eventType,'healthy',timestamp),
+ ]);
+ return ciphertext;
+}
+
+async function loadOwnerSession(env:Env,row:DeviceSessionRow):Promise<{row:OwnerSessionRow;session:DeviceUpstreamSession}|null> {
+ let canonical=await env.DB.prepare('SELECT * FROM owner_upstream_sessions WHERE owner_id=?').bind(row.owner_id).first<OwnerSessionRow>();
+ if(!canonical){
+  let legacy:DeviceUpstreamSession;try{legacy=await decryptJson<DeviceUpstreamSession>(row.session_ciphertext,env.SESSION_ENCRYPTION_KEY)}catch{return null}
+  if(!legacy.customerId||await ownerId(legacy.customerId,env.SESSION_ENCRYPTION_KEY)!==row.owner_id)return null;
+  await upsertOwnerSession(env,row.owner_id,legacy,'legacy_migration');
+  canonical=await env.DB.prepare('SELECT * FROM owner_upstream_sessions WHERE owner_id=?').bind(row.owner_id).first<OwnerSessionRow>();
+ }
+ if(!canonical)return null;
+ try {
+  const session=await decryptJson<DeviceUpstreamSession>(canonical.session_ciphertext,env.SESSION_ENCRYPTION_KEY);
+  if(!session.customerId||await ownerId(session.customerId,env.SESSION_ENCRYPTION_KEY)!==row.owner_id)return null;
+  return {row:canonical,session};
+ } catch { return null; }
+}
 
 async function requireSession(request:Request,env:Env):Promise<{error:Response}|{active:ActiveSession;owner:string}> { const active=await getSession(request,env); if(!active)return {error:errorResponse('Inte inloggad.',401)}; return {active,owner:await ownerId(active.data.customerId,env.SESSION_ENCRYPTION_KEY)}; }
 async function verifyMutation(request:Request,active:ActiveSession,env:Env) { if(!sameOrigin(request))return errorResponse('Otillåtet ursprung.',403); const token=request.headers.get('x-csrf-token')??'',expected=await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY); if(!token||!safeEqual(token,expected))return errorResponse('Ogiltig CSRF-token.',403); return null; }
@@ -89,6 +115,7 @@ async function login(request:Request,env:Env) {
  if(!auth.ok)return errorResponse(auth.status===401?'Fel användarnamn eller lösenord.':'Inloggningen misslyckades.',auth.status===401?401:502);
  const data=await auth.json() as {access_token:string;refresh_token?:string;username:string;expires_in:number};
  const session:Session={accessToken:data.access_token,refreshToken:data.refresh_token,customerId:data.username,expiresAt:Date.now()+data.expires_in*1000,upstreamCookie:upstreamCookie(auth.headers)??affinity,csrfToken:crypto.randomUUID()};
+ await upsertOwnerSession(env,await ownerId(session.customerId,env.SESSION_ENCRYPTION_KEY),upstreamFromSession(session),'login');
  const id=crypto.randomUUID(),ttl=Math.max(60,Math.min(data.expires_in,604800)); await env.SESSIONS.put(id,await encrypt(session,env.SESSION_ENCRYPTION_KEY),{expirationTtl:ttl});
  return response({authenticated:true},200,{'set-cookie':sessionCookie(id,ttl)});
 }
@@ -96,7 +123,7 @@ async function login(request:Request,env:Env) {
 async function sessionStatus(request:Request,env:Env) { const active=await getSession(request,env); if(!active)return response({authenticated:false}); return response({authenticated:true,expiresAt:new Date(active.data.expiresAt).toISOString(),csrfToken:await ownerId(`csrf:${active.id}`,env.SESSION_ENCRYPTION_KEY),passageEnabled:passageEnabled(env.PASSAGE_ENABLED)&&env.PASSAGE_AUTHORIZATION_ID.startsWith('APPROVED-')}); }
 async function listReaders(request:Request,env:Env) { const auth=await requireSession(request,env); if('error'in auth)return auth.error; await ensureDefaultReader(env,auth.owner); const rows=await env.DB.prepare('SELECT id,name,card_reader,created_at,last_opened_at FROM readers WHERE owner_id=? ORDER BY COALESCE(last_opened_at,created_at) DESC').bind(auth.owner).all<ReaderRow>(); return response({readers:rows.results.map(serializeReader)}); }
 async function listConfiguredReaders(env:Env) { const rows=await env.DB.prepare('SELECT id,name FROM readers WHERE config_ciphertext IS NOT NULL ORDER BY created_at DESC').all<{id:string;name:string}>(); return response({readers:rows.results}); }
-async function executeStoredReader(env:Env,owner:string,session:PassageCredentials,readerId:string,eventType:string,retryCredentials?:()=>Promise<PassageCredentials|null>) {
+async function executeStoredReader(env:Env,owner:string,session:PassageCredentials,readerId:string,eventType:string) {
  const reader=await env.DB.prepare('SELECT card_reader,config_ciphertext FROM readers WHERE id=? AND owner_id=? AND (config_ciphertext IS NOT NULL OR card_reader>0)').bind(readerId,owner).first<{card_reader:number;config_ciphertext:string|null}>();
  if(!reader)return {ok:false as const,status:404,error:'Dörren hittades inte.'};
  let cardReader=reader.card_reader;
@@ -108,7 +135,7 @@ async function executeStoredReader(env:Env,owner:string,session:PassageCredentia
   cardReader=lookup.cardReader;
  }
  const now=Date.now();if(!await acquirePassageCooldown({db:env.DB,owner,readerId,now}))return {ok:false as const,status:429,error:'Vänta 1 sekund innan nästa försök.'};
- const upstream=await sendWithOne401Retry({send:(credentials?:PassageCredentials)=>{const active=credentials??session;return sendDoorRequest({fetcher:fetch,baseUrl:env.BRP_BASE_URL,customerId:active.customerId,cardReader,accessToken:active.accessToken,cookie:active.upstreamCookie})},refresh:retryCredentials});
+ const upstream=await sendDoorRequest({fetcher:fetch,baseUrl:env.BRP_BASE_URL,customerId:session.customerId,cardReader,accessToken:session.accessToken,cookie:session.upstreamCookie});
  const timestamp=new Date(now).toISOString(),auditId=crypto.randomUUID(),outcome=upstream.ok?'accepted':'rejected';
  await env.DB.prepare('INSERT INTO reader_events(id,reader_id,owner_id,event_type,data_json,created_at) VALUES(?,?,?,?,?,?)').bind(auditId,readerId,owner,eventType,JSON.stringify({outcome,status:upstream.status}),timestamp).run();
  return upstream.ok?{ok:true as const,timestamp}:{ok:false as const,status:upstream.status===401?401:502,error:'Dörrförsöket avvisades.'};
@@ -119,22 +146,13 @@ async function resolveNamedTarget(env:Env,owner:string,type:'door'|'sequence',na
  const rows=await env.DB.prepare('SELECT id FROM sequences WHERE owner_id=? AND name_key=? LIMIT 2').bind(owner,nameKey).all<{id:string}>();if(rows.results.length>1)return {ambiguous:true as const};if(!rows.results[0])return null;const stored=await storedSequenceSteps(env,owner,rows.results[0].id);return stored?{id:stored.id,type:'sequence' as const,steps:stored.steps}:null;
 }
 
-async function refreshDevice(env:Env,row:DeviceSessionRow,current:DeviceUpstreamSession):Promise<DeviceUpstreamSession|null> {
- const refreshPath=(env as Env&{BRP_REFRESH_PATH?:string}).BRP_REFRESH_PATH;if(!refreshPath||!current.refreshToken)return null;
- const now=Date.now();
- return await coordinateRefresh<DeviceUpstreamSession>({version:row.session_version,
-  tryAcquire:async version=>(await env.DB.prepare('UPDATE device_sessions SET refresh_lock_until=? WHERE id=? AND owner_id=? AND session_version=? AND (refresh_lock_until IS NULL OR refresh_lock_until<?)').bind(now+10000,row.id,row.owner_id,version,now).run()).meta.changes>0,
-  readCurrent:async()=>{const newer=await env.DB.prepare('SELECT session_ciphertext,session_version FROM device_sessions WHERE id=? AND owner_id=?').bind(row.id,row.owner_id).first<{session_ciphertext:string;session_version:number}>();return newer?{version:newer.session_version,session:await decryptJson<DeviceUpstreamSession>(newer.session_ciphertext,env.SESSION_ENCRYPTION_KEY)}:null},
-  refresh:async()=>{const result=await refreshBrpSession({fetcher:fetch,baseUrl:env.BRP_BASE_URL,path:refreshPath,refreshToken:current.refreshToken,currentCookie:current.upstreamCookie,customerId:current.customerId});return result.ok?{customerId:result.customerId,accessToken:result.accessToken,refreshToken:result.refreshToken,upstreamCookie:result.upstreamCookie,expiresAt:result.expiresAt}:null},
-  save:async(session,version)=>{const timestamp=new Date().toISOString(),ciphertext=await encryptJson(session,env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,refresh_lock_until=NULL,session_version=session_version+1 WHERE id=? AND owner_id=? AND session_version=?').bind(ciphertext,session.expiresAt,timestamp,row.id,row.owner_id,version).run();await auditDevice(env,row,'refresh',timestamp)},
-  release:async version=>{await env.DB.prepare('UPDATE device_sessions SET refresh_lock_until=NULL WHERE id=? AND owner_id=? AND session_version=?').bind(row.id,row.owner_id,version).run()},wait:()=>new Promise(resolve=>setTimeout(resolve,50))});
-}
-
 async function listDeviceSessions(request:Request,env:Env) {
  const auth=await requireSession(request,env);if('error'in auth)return auth.error;
  const rows=await env.DB.prepare('SELECT id,owner_id,name,expires_at,created_at,updated_at,last_used_at,revoked_at FROM device_sessions WHERE owner_id=? ORDER BY created_at DESC').bind(auth.owner).all<DeviceSessionRow>();
  const targets=await env.DB.prepare("SELECT dst.device_session_id,dst.target_type,CASE dst.target_type WHEN 'door' THEN r.name ELSE s.name END AS target_name FROM device_session_targets dst LEFT JOIN readers r ON dst.target_type='door' AND r.id=dst.target_id LEFT JOIN sequences s ON dst.target_type='sequence' AND s.id=dst.target_id JOIN device_sessions ds ON ds.id=dst.device_session_id WHERE ds.owner_id=?").bind(auth.owner).all<{device_session_id:string;target_type:'door'|'sequence';target_name:string|null}>();
- return response({devices:rows.results.map(row=>({id:row.id,name:row.name,expiresAt:row.expires_at===NEVER_EXPIRES_AT?null:new Date(row.expires_at).toISOString(),createdAt:row.created_at,updatedAt:row.updated_at,lastUsedAt:row.last_used_at,revokedAt:row.revoked_at,targets:targets.results.filter(target=>target.device_session_id===row.id&&target.target_name).map(target=>({type:target.target_type,name:target.target_name}))}))});
+ const ownerSession=await env.DB.prepare('SELECT * FROM owner_upstream_sessions WHERE owner_id=?').bind(auth.owner).first<OwnerSessionRow>(),now=Date.now();
+ const shared={sessionStatus:ownerSessionStatus(ownerSession,now),upstreamExpiresAt:ownerSession?new Date(ownerSession.upstream_expires_at).toISOString():null,lastRefreshAt:ownerSession?.last_refresh_at??null};
+ return response({ownerSession:shared,devices:rows.results.map(row=>({id:row.id,name:row.name,expiresAt:row.expires_at===NEVER_EXPIRES_AT?null:new Date(row.expires_at).toISOString(),createdAt:row.created_at,updatedAt:row.updated_at,lastUsedAt:row.last_used_at,revokedAt:row.revoked_at,...shared,targets:targets.results.filter(target=>target.device_session_id===row.id&&target.target_name).map(target=>({type:target.target_type,name:target.target_name}))}))});
 }
 
 async function createDeviceSession(request:Request,env:Env) {
@@ -142,7 +160,7 @@ async function createDeviceSession(request:Request,env:Env) {
  let body:unknown;try{body=await request.json()}catch{return errorResponse('Invalid request.',400)}const valid=validateDeviceInput(body);if(!valid.ok)return errorResponse(valid.error,valid.status);
  for(const target of valid.targets){const table=target.type==='door'?'readers':'sequences';const owned=await env.DB.prepare(`SELECT id FROM ${table} WHERE id=? AND owner_id=?`).bind(target.id,auth.owner).first();if(!owned)return errorResponse('Invalid target allowlist.',400)}
  const generated=createDeviceCredential(),tokenHash=await hashDeviceSecret(generated.secret,env.SESSION_ENCRYPTION_KEY),now=Date.now(),timestamp=new Date(now).toISOString(),expiresAt=valid.expiresInDays==='never'?NEVER_EXPIRES_AT:now+valid.expiresInDays*86400000;
- const upstream:DeviceUpstreamSession={customerId:auth.active.data.customerId,accessToken:auth.active.data.accessToken,refreshToken:auth.active.data.refreshToken,upstreamCookie:auth.active.data.upstreamCookie,expiresAt:auth.active.data.expiresAt},ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);
+ const upstream=upstreamFromSession(auth.active.data),ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);
  const statements=[env.DB.prepare('INSERT INTO device_sessions(id,owner_id,name,name_key,token_hash,session_ciphertext,upstream_expires_at,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(generated.id,auth.owner,valid.name,valid.nameKey,tokenHash,ciphertext,upstream.expiresAt,expiresAt,timestamp,timestamp),...valid.targets.map(target=>env.DB.prepare('INSERT INTO device_session_targets(device_session_id,target_type,target_id) VALUES(?,?,?)').bind(generated.id,target.type,target.id))];
  try{await env.DB.batch(statements)}catch(error){if(isUniqueError(error))return errorResponse('A device with that name already exists.',409);throw error}
  await auditDevice(env,{id:generated.id,owner_id:auth.owner},'create',timestamp);return response({device:{id:generated.id,name:valid.name,expiresAt:expiresAt===NEVER_EXPIRES_AT?null:new Date(expiresAt).toISOString()},credential:generated.credential},201);
@@ -153,7 +171,7 @@ async function mutateDeviceSession(request:Request,env:Env,id:string,action?:'ro
  const row=await env.DB.prepare('SELECT * FROM device_sessions WHERE id=? AND owner_id=?').bind(id,auth.owner).first<DeviceSessionRow>();if(!row)return errorResponse('Device not found.',404);const timestamp=new Date().toISOString();
  if(request.method==='DELETE'){await env.DB.prepare('UPDATE device_sessions SET revoked_at=?,updated_at=? WHERE id=? AND owner_id=?').bind(timestamp,timestamp,id,auth.owner).run();await auditDevice(env,row,'revoke',timestamp);return response({revoked:true})}
  if(action==='rotate'){const generated=createDeviceCredential(id),hash=await hashDeviceSecret(generated.secret,env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE device_sessions SET token_hash=?,revoked_at=NULL,updated_at=? WHERE id=? AND owner_id=?').bind(hash,timestamp,id,auth.owner).run();await auditDevice(env,row,'rotate',timestamp);return response({credential:generated.credential})}
- if(action==='reauthorize'){const upstream:DeviceUpstreamSession={customerId:auth.active.data.customerId,accessToken:auth.active.data.accessToken,refreshToken:auth.active.data.refreshToken,upstreamCookie:auth.active.data.upstreamCookie,expiresAt:auth.active.data.expiresAt},ciphertext=await encryptJson(upstream,env.SESSION_ENCRYPTION_KEY);await env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,session_version=session_version+1,refresh_lock_until=NULL WHERE id=? AND owner_id=?').bind(ciphertext,upstream.expiresAt,timestamp,id,auth.owner).run();await auditDevice(env,row,'reauthorize',timestamp);return response({reauthorized:true})}
+ if(action==='reauthorize'){const upstream=upstreamFromSession(auth.active.data),ciphertext=await upsertOwnerSession(env,auth.owner,upstream,'reauthorize');await env.DB.prepare('UPDATE device_sessions SET session_ciphertext=?,upstream_expires_at=?,updated_at=?,session_version=session_version+1,refresh_lock_until=NULL WHERE owner_id=?').bind(ciphertext,upstream.expiresAt,timestamp,auth.owner).run();await auditDevice(env,row,'reauthorize',timestamp);return response({reauthorized:true})}
  let body:{name?:unknown};try{body=await request.json() as {name?:unknown}}catch{return errorResponse('Invalid request.',400)}const name=validateReaderName(body.name);if(!name.ok)return errorResponse(name.error,400);try{await env.DB.prepare('UPDATE device_sessions SET name=?,name_key=?,updated_at=? WHERE id=? AND owner_id=?').bind(name.name,name.nameKey,timestamp,id,auth.owner).run()}catch(error){if(isUniqueError(error))return errorResponse('A device with that name already exists.',409);throw error}await auditDevice(env,row,'rename',timestamp);return response({device:{id,name:name.name}});
 }
 async function createConfiguredReader(request:Request,env:Env) {
@@ -180,14 +198,13 @@ async function openDoor(request:Request,env:Env) {
   const deviceAccess=validateDeviceRecord({row,computedHash:await hashDeviceSecret(deviceCredential.secret,env.SESSION_ENCRYPTION_KEY),now,constantTimeEqual});if(!deviceAccess.ok){logTiming('device',401,false);return errorResponse(deviceAccess.error,401)}
   const rateKey=`device-rate:${row.id}`,recentRaw=await env.SESSIONS.get(rateKey);if(recentRaw&&now-Number(recentRaw)<1000){logTiming('device',429,false);return errorResponse('Wait 1 second before retrying.',429)}await env.SESSIONS.put(rateKey,String(now),{expirationTtl:60});
   const valid=validateDeviceTargetBody(body);if(!valid.ok){logTiming('device',valid.status,false);return errorResponse(valid.error,valid.status)}
-  let session=await decryptJson<DeviceUpstreamSession>(row.session_ciphertext,env.SESSION_ENCRYPTION_KEY),mutableVersion=row.session_version;
-  if(session.customerId.length<1||await ownerId(session.customerId,env.SESSION_ENCRYPTION_KEY)!==row.owner_id){logTiming('device',401,false);return errorResponse('Invalid device session.',401)}
-  if(session.expiresAt<=now+30000){const refreshStarted=Date.now(),fresh=await refreshDevice(env,{...row,session_version:mutableVersion},session);timings.refresh=Date.now()-refreshStarted;if(!fresh){logTiming('device',401,false);return errorResponse('Device session needs reauthorization.',401)}session=fresh;mutableVersion++}
+   const cachedStarted=Date.now(),cached=await loadOwnerSession(env,row);timings.sessionLookup=Date.now()-cachedStarted;
+   if(!cached||ownerSessionStatus(cached.row,now)==='reauthorization_required'||cached.session.expiresAt<=now){logTiming('device',401,false);return errorResponse('Device session needs reauthorization.',401)}
+   const session=cached.session;
   const targetStarted=Date.now(),target=await resolveNamedTarget(env,row.owner_id,valid.targetType,valid.targetNameKey);timings.targetLookup=Date.now()-targetStarted;
   if(!target||'ambiguous'in target){const status=target?409:404;logTiming('device',status,false);return errorResponse(target?'Target name is ambiguous.':'Target not found.',status)}
   const allowlist=await env.DB.prepare('SELECT target_id FROM device_session_targets WHERE device_session_id=?').bind(row.id).all<{target_id:string}>();if(!isDeviceTargetAllowed(allowlist.results.map(entry=>entry.target_id),target.id)){logTiming('device',403,false);return errorResponse('Target is not allowed for this device.',403)}
-  const retry=async()=>{const refreshStarted=Date.now(),fresh=await refreshDevice(env,{...row,session_version:mutableVersion},session);timings.refresh=(timings.refresh??0)+(Date.now()-refreshStarted);if(fresh){session=fresh;mutableVersion++;return fresh}return null};
-  const passageStarted=Date.now(),executed=await runSequenceSteps({steps:target.steps,openStep:async step=>executeStoredReader(env,row.owner_id,session,step.readerId,'device_api_passage',retry),wait:async ms=>{timings.configuredDelay=(timings.configuredDelay??0)+ms;await new Promise(resolve=>setTimeout(resolve,ms))}});timings.passage=Date.now()-passageStarted-(timings.configuredDelay??0);
+   const passageStarted=Date.now(),executed=await runSequenceSteps({steps:target.steps,openStep:async step=>executeStoredReader(env,row.owner_id,session,step.readerId,'device_api_passage'),wait:async ms=>{timings.configuredDelay=(timings.configuredDelay??0)+ms;await new Promise(resolve=>setTimeout(resolve,ms))}});timings.passage=Date.now()-passageStarted-(timings.configuredDelay??0);
   const timestamp=new Date().toISOString();await env.DB.prepare('UPDATE device_sessions SET last_used_at=?,updated_at=? WHERE id=? AND owner_id=?').bind(timestamp,timestamp,row.id,row.owner_id).run();await auditDevice(env,row,'use',timestamp);
   if(target.type==='sequence')await env.DB.prepare('INSERT INTO sequence_events(id,sequence_id,owner_id,outcome,completed_steps,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),target.id,row.owner_id,executed.ok?'accepted':'rejected',executed.completedSteps,timestamp).run();
   logTiming('device',executed.ok?200:executed.status,executed.ok);if(!executed.ok)return response({error:executed.error,failedStep:executed.failedStep,completedSteps:executed.completedSteps},executed.status);return response({ok:true,message:'Request completed.',completedSteps:executed.completedSteps,timestamp},200);
@@ -290,6 +307,28 @@ async function passage(request:Request,env:Env,readerId:string) {
 }
 async function logout(request:Request,env:Env) { const id=cookie(request,'brp_session'); if(id)await env.SESSIONS.delete(id); return response({authenticated:false},200,{'set-cookie':clearCookie()}); }
 
+async function proactiveSessionRefresh(env:Env,now=Date.now()) {
+ const result=await runProactiveRefresh<OwnerSessionRow,DeviceUpstreamSession>({
+  enabled:env.PROACTIVE_REFRESH_ENABLED.toLowerCase()==='true',
+  contractVerified:BRP_REFRESH_CONTRACT_VERIFIED,
+  now,
+  limit:MAX_REFRESH_BATCH,
+  listCandidates:async({now:current,before,limit})=>{
+   const rows=await env.DB.prepare("SELECT ous.*,COUNT(ds.id) AS active_device_count FROM owner_upstream_sessions ous JOIN device_sessions ds ON ds.owner_id=ous.owner_id AND ds.revoked_at IS NULL AND ds.expires_at>? WHERE ous.upstream_expires_at>? AND ous.upstream_expires_at<=? AND ous.refresh_status!='reauthorization_required' AND (ous.refresh_lock_until IS NULL OR ous.refresh_lock_until<=?) GROUP BY ous.owner_id ORDER BY ous.upstream_expires_at ASC LIMIT ?").bind(current,current,before,current,limit).all<OwnerSessionRow>();
+   return rows.results;
+  },
+  acquire:async(row,lockUntil)=>(await env.DB.prepare("UPDATE owner_upstream_sessions SET refresh_lock_until=?,refresh_status='refresh_pending',updated_at=? WHERE owner_id=? AND session_version=? AND (refresh_lock_until IS NULL OR refresh_lock_until<=?) AND upstream_expires_at>?").bind(lockUntil,new Date(now).toISOString(),row.owner_id,row.session_version,now,now).run()).meta.changes>0,
+  decryptSession:async row=>await decryptJson<DeviceUpstreamSession>(row.session_ciphertext,env.SESSION_ENCRYPTION_KEY),
+  refreshSession:async current=>{const refreshed=await refreshBrpSession(current);return refreshed.ok?refreshed.session:null},
+  saveSuccess:async(row,fresh)=>{const timestamp=new Date().toISOString(),ciphertext=await encryptJson(fresh,env.SESSION_ENCRYPTION_KEY);const saved=await env.DB.prepare("UPDATE owner_upstream_sessions SET session_ciphertext=?,upstream_expires_at=?,session_version=session_version+1,refresh_lock_until=NULL,last_refresh_at=?,refresh_status='healthy',last_error=NULL,updated_at=? WHERE owner_id=? AND session_version=?").bind(ciphertext,fresh.expiresAt,timestamp,timestamp,row.owner_id,row.session_version).run();if(!saved.meta.changes)throw new Error('stale_session_version')},
+  saveFailure:async(row,status,error)=>{await env.DB.prepare('UPDATE owner_upstream_sessions SET refresh_status=?,last_error=?,updated_at=? WHERE owner_id=? AND session_version=?').bind(status,error,new Date().toISOString(),row.owner_id,row.session_version).run()},
+  release:async row=>{await env.DB.prepare('UPDATE owner_upstream_sessions SET refresh_lock_until=NULL WHERE owner_id=? AND session_version=?').bind(row.owner_id,row.session_version).run()},
+  audit:async(row,eventType,status,durationMs)=>{await env.DB.prepare('INSERT INTO owner_upstream_session_events(id,owner_id,event_type,status,duration_ms,created_at) VALUES(?,?,?,?,?,?)').bind(crypto.randomUUID(),row.owner_id,eventType,status,durationMs,new Date().toISOString()).run()},
+ });
+ console.log(JSON.stringify({event:'proactive_session_refresh',status:result.status,selected:result.selected,refreshed:result.refreshed,failed:result.failed}));
+ return result;
+}
+
 export default { async fetch(request:Request,env:Env):Promise<Response> {
  try {
   const url=new URL(request.url),path=url.pathname;
@@ -317,4 +356,4 @@ export default { async fetch(request:Request,env:Env):Promise<Response> {
   if(path==='/readers'||path==='/readers/new'||/^\/readers\/[0-9a-f-]{36}$/i.test(path))return env.ASSETS.fetch(new Request(new URL('/index.html',url),request));
   return env.ASSETS.fetch(request);
  } catch { console.error(JSON.stringify({event:'request_failed'})); return errorResponse('Ett oväntat fel inträffade.',500); }
-}};
+ }, async scheduled(_controller:ScheduledController,env:Env,_ctx:ExecutionContext):Promise<void> { await proactiveSessionRefresh(env); }} satisfies ExportedHandler<Env>;

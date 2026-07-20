@@ -1,1 +1,0 @@
-export function coordinateRefresh<T>(input:{version:number;tryAcquire:(version:number)=>Promise<boolean>;readCurrent:()=>Promise<{version:number;session:T}|null>;refresh:()=>Promise<T|null>;save:(session:T,version:number)=>Promise<void>;release:(version:number)=>Promise<void>;wait:()=>Promise<void>;attempts?:number}):Promise<T|null>;

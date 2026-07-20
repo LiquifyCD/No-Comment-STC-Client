@@ -9,8 +9,8 @@ export function SessionProvider({children}:PropsWithChildren){
  const[status,setStatus]=useState<Status>('loading'); const[profile,setProfile]=useState<CustomerProfile|null>(null); const[error,setError]=useState(''); const[token,setToken]=useState<TokenSet|null>(null);
  async function activate(next:TokenSet){ api.setSessionTokens(next); setToken(next); await store.saveTokens(next); setProfile(await api.getOwnProfile()); setStatus('authenticated'); }
  async function logout(){api.setSessionTokens(null);setToken(null);setProfile(null);setError('');await store.clearTokens();setStatus('anonymous');}
- async function reloadProfile(){try{setError('');let current=token;if(current&&current.expiresAt-Date.now()<60_000){current=await api.refresh(current);setToken(current);await store.saveTokens(current);}setProfile(await api.getOwnProfile());}catch(e){setError(e instanceof Error?e.message:'Kunde inte läsa profilen.');}}
- useEffect(()=>{(async()=>{const saved=await store.loadTokens();if(!saved)return setStatus('anonymous');try{let current=saved;if(current.expiresAt-Date.now()<60_000)current=await api.refresh(current);await activate(current);}catch{await logout();}})();},[]);
+ async function reloadProfile(){try{setError('');if(!token||token.expiresAt-Date.now()<60_000){await logout();throw new Error('Sessionen har gått ut. Logga in igen.')}setProfile(await api.getOwnProfile());}catch(e){setError(e instanceof Error?e.message:'Kunde inte läsa profilen.');}}
+ useEffect(()=>{(async()=>{const saved=await store.loadTokens();if(!saved||saved.expiresAt-Date.now()<60_000)return logout();try{await activate(saved);}catch{await logout();}})();},[]);
  async function login(username:string,password:string){try{setError('');await activate(await api.login(username,password));}catch(e){await logout();throw e;}}
  return <Context.Provider value={{status,profile,error,login,logout,reloadProfile}}>{children}</Context.Provider>;
 }

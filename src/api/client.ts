@@ -17,11 +17,4 @@ export async function login(username:string,password:string):Promise<TokenSet>{
   const next={accessToken:data.access_token,refreshToken:data.refresh_token,customerId:data.username,expiresAt:Date.now()+data.expires_in*1000}; setSessionTokens(next); return next;
 }
 
-// BRP installations can expose different refresh contracts. This tries the
-// conventional endpoint and safely falls back to a fresh login if unsupported.
-export async function refresh(current:TokenSet):Promise<TokenSet>{
-  if(!current.refreshToken) throw new Error('Ingen refresh token finns.');
-  const data=await json<LoginResponse>('/auth/refresh',{method:'POST',body:JSON.stringify({refresh_token:current.refreshToken})});
-  const next={accessToken:data.access_token,refreshToken:data.refresh_token ?? current.refreshToken,customerId:data.username ?? current.customerId,expiresAt:Date.now()+data.expires_in*1000}; setSessionTokens(next); return next;
-}
 export async function getOwnProfile():Promise<CustomerProfile>{ if(!tokens) throw new Error('Inte inloggad.'); return json(`/customers/${encodeURIComponent(tokens.customerId)}`,{headers:{Authorization:`Bearer ${tokens.accessToken}`}}); }

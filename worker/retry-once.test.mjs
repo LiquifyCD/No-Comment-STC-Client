@@ -1,3 +1,0 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {sendWithOne401Retry} from './retry-once.mjs';
-test('one 401 causes at most one refresh and one retry',async()=>{let sends=0,refreshes=0;const result=await sendWithOne401Retry({send:async()=>{sends++;return {ok:false,status:401}},refresh:async()=>{refreshes++;return {token:'new'}}});assert.equal(result.status,401);assert.equal(sends,2);assert.equal(refreshes,1)});
-test('success and non-401 responses are never retried',async()=>{for(const status of [200,403,502]){let sends=0;await sendWithOne401Retry({send:async()=>({ok:status===200,status,count:++sends}),refresh:async()=>{throw new Error('unexpected')}});assert.equal(sends,1)}});

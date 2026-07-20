@@ -35,9 +35,28 @@ Content-Type: application/json
 {"sequenceName":"Main then sluss"}
 ```
 
-The fast path normally skips app configuration and login, reusing the encrypted server session. A credential can expire after 30, 60, or 90 days, or be set to **Never**. Never applies only to the device credential: the encrypted BRP session may still require reauthorization. Each credential has a last-used timestamp, optional target allowlist, one-second limit, and audit timestamps. It can be renamed, rotated, reauthorized, or revoked in **Devices**. Rotation invalidates the old value immediately. If upstream refresh is not verified/configured, an expired BRP session returns `401` and must be reauthorized from a current web login.
+The fast path skips app configuration, login, and refresh network calls. Every device for an owner reads the same canonical AES-GCM-encrypted upstream session. A credential can expire after 30, 60, or 90 days, or be set to **Never**. Never applies only to the device credential: the encrypted BRP session may still require reauthorization. Each credential has a last-used timestamp, optional target allowlist, one-second limit, and audit timestamps. It can be renamed, rotated, reauthorized, or revoked in **Devices**. Login and **Reauthorize** replace the shared session for all devices. Rotation invalidates only the selected device credential.
 
-Open responses are never cached or replayed. A BRP `401` permits at most one refresh and one retry of that same reader request; concurrent refresh is guarded by a database lock. Timing logs contain only mode, status, total milliseconds, and stage durations—never identities, target names, credentials, or upstream response data.
+Open responses are never cached or replayed. Expired, invalid, or reauthorization-required cached sessions return a sanitized `401` without login, refresh, or retry. Timing logs contain only mode, status, total milliseconds, and stage durations—never identities, target names, credentials, or upstream response data.
+
+## Proactive session renewal
+
+The Worker is scheduled for `03:00` and `15:00` UTC. A run is bounded to 12 active owner sessions expiring within 36 hours, uses versioned locks to prevent concurrent refresh-token use, and never performs reader lookup or passage requests. The Devices view exposes only `healthy`, `refresh pending`, `refresh failed`, or `reauthorization required`, upstream expiry, and the last successful refresh timestamp.
+
+Proactive renewal is currently safe-disabled with `PROACTIVE_REFRESH_ENABLED=false`. The refresh adapter makes zero network calls until an authorized capture verifies the exact BRP refresh method, path, headers, body, cookie behavior, response fields, token rotation, and failure behavior. No username or password is retained for cron jobs.
+
+`GET /api/device-sessions` includes an owner-level status object and repeats it on each device for compatibility:
+
+```json
+{"ownerSession":{"sessionStatus":"healthy","upstreamExpiresAt":"2026-07-20T12:00:00.000Z","lastRefreshAt":null},"devices":[]}
+```
+
+Local cron test:
+
+```powershell
+npx wrangler dev --test-scheduled
+Invoke-WebRequest "http://localhost:8787/cdn-cgi/handler/scheduled?format=json"
+```
 
 ## Legacy one-request API
 

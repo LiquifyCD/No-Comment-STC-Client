@@ -1,1 +1,2 @@
-export function refreshBrpSession(input:{fetcher:typeof fetch;baseUrl:string;path?:string;refreshToken?:string;currentCookie?:string;customerId:string;now?:()=>number}):Promise<{ok:true;customerId:string;accessToken:string;refreshToken?:string;upstreamCookie?:string;expiresAt:number}|{ok:false;status:number;error:string}>;
+export const BRP_REFRESH_CONTRACT_VERIFIED:false;
+export function refreshBrpSession(currentSession:{customerId:string;accessToken:string;refreshToken?:string;upstreamCookie?:string;expiresAt:number}):Promise<{ok:true;session:{customerId:string;accessToken:string;refreshToken:string;upstreamCookie?:string;expiresAt:number}}|{ok:false;status:number;error:string;reason:string}>;

@@ -16,6 +16,7 @@ The layout keeps a compact phone interface, switches to horizontal navigation on
 - Login creates an encrypted, `HttpOnly`, `Secure`, same-site server session.
 - Passwords, bearer/refresh tokens, upstream cookies, customer IDs, and resolved reader codes are never returned to or persisted in the browser.
 - Device credentials are displayed once. Only a keyed hash is stored; reusable upstream sessions remain AES-GCM encrypted server-side.
+- All devices for one owner reference one canonical encrypted upstream session. Login or reauthorization replaces it for every device without storing the BRP username or password.
 - Stored `major` and `minor` values are encrypted and never returned.
 - Ownership is derived from the authenticated server session. Mutations require same-origin requests and a session-bound CSRF token.
 - Door and sequence operations use atomic cooldown and replay protection.
@@ -43,6 +44,9 @@ Existing native bundle identifiers, URL scheme, and secure-storage key names are
 npm ci
 npm test
 npm run typecheck
+npm run secret-scan
+npx wrangler types --check
+npx wrangler d1 migrations apply brp-personal-client --local
 npx wrangler deploy --dry-run
 ```
 
@@ -76,7 +80,15 @@ npx wrangler d1 migrations apply brp-personal-client --remote
 npx wrangler deploy
 ```
 
-`BRP_REFRESH_PATH` remains intentionally unset until the upstream refresh request is verified. Access tokens are reused until expiry; reauthorize the device after signing in again if refresh is unavailable.
+The Worker includes a bounded cron handler at `0 3,15 * * *` UTC. `PROACTIVE_REFRESH_ENABLED` is deliberately `false`, and the refresh adapter performs no network request because no authorized capture has verified BRP's refresh method, path, headers, request body, cookie handling, response fields, token rotation, or failure semantics. Do not enable or deploy refresh calls until all of those details are verified. Until then, cached access tokens are used until expiry and an expired session returns a fast `401`; sign in and use **Reauthorize** to replace the shared owner session.
+
+Test the disabled scheduled handler locally without contacting BRP:
+
+```powershell
+npx wrangler dev --test-scheduled
+# In another terminal:
+Invoke-WebRequest "http://localhost:8787/cdn-cgi/handler/scheduled?format=json"
+```
 
 ## License and third parties
 

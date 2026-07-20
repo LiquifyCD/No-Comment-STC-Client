@@ -1,1 +1,0 @@
-export function sendWithOne401Retry<TCredentials,TResult extends {ok:boolean;status:number}>(input:{send:(credentials?:TCredentials)=>Promise<TResult>;refresh?:()=>Promise<TCredentials|null>}):Promise<TResult>;
