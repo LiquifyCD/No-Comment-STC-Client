@@ -112,15 +112,17 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .step-actions button { width: 44px; padding: 0; }
 .empty-state { padding: 28px; border: 1px dashed var(--border-strong); border-radius: 18px; color: var(--muted); text-align: center; }
 
-.credential-once { display: grid; gap: 10px; margin-bottom: 16px; padding: 18px; border-color: rgba(170, 167, 255, .42); }
+.device-sections { display: grid; gap: 18px; }
+.credential-once { display: grid; gap: 10px; padding: 18px; border-color: rgba(170, 167, 255, .42); }
 .credential-once code { max-width: 100%; padding: 12px; overflow-wrap: anywhere; border-radius: 10px; background: #05060a; color: var(--text); user-select: all; }
 .credential-once small, .device-card small, .session-health small { color: var(--muted); }
 .check-row { display: flex; align-items: center; gap: 10px; font-weight: 500; }
 .check-row input { width: 20px; min-height: 20px; accent-color: var(--accent); }
 .form-panel fieldset { display: grid; gap: 8px; margin: 0; padding: 14px; border: 1px solid var(--border); border-radius: 14px; }
 .form-panel legend { padding: 0 6px; color: var(--muted); }
+.device-card > div:first-child { display: grid; gap: 6px; }
 .device-card > div:last-child { flex-wrap: wrap; justify-content: flex-end; }
-.session-health { gap: 6px; margin-bottom: 16px; padding: 18px; }
+.session-health { gap: 6px; padding: 18px; }
 
 dialog { width: min(calc(100% - 28px), 460px); max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 20px); overflow: auto; padding: 0; border: 1px solid var(--border-strong); border-radius: 22px; background: var(--surface); color: var(--text); box-shadow: 0 28px 80px rgba(0, 0, 0, .78); }
 dialog::backdrop { background: rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(7px); backdrop-filter: blur(7px); }
@@ -180,8 +182,10 @@ dialog::backdrop { background: rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(
   .step-actions { justify-content: flex-end; }
   .sequence-toolbar { justify-content: stretch; }
   .sequence-toolbar button { width: 100%; }
-  .device-card > div:last-child { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
-  .device-card button { width: 100%; }
+  .device-card { flex-direction: column; width: 100%; }
+  .device-card > div:first-child { width: 100%; }
+  .device-card > div:last-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .device-card button { display: flex; width: 100%; align-items: center; justify-content: center; padding-inline: 8px; font-size: .78rem; line-height: 1.1; white-space: nowrap; }
   dialog { width: 100%; max-width: none; margin: auto 0 0; padding-bottom: var(--safe-bottom); border-bottom: 0; border-radius: 22px 22px 0 0; }
   #delete-form { padding: 26px 22px; }
 }
