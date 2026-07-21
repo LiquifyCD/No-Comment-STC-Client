@@ -1,4 +1,5 @@
 const app=document.querySelector('#app');
+const launchStartedAt=performance.now();
 let session=null,readers=[],sequences=[],devices=[],ownerSession=null,defaultSelection=null,selectedTarget='',activeTab='open',loginError='',loadError='',pendingDelete=null,sequenceDraft=null,oneTimeCredential='';
 const TAB_ITEMS=[
   {id:'open',label:'Open',icon:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 10V7a3.5 3.5 0 1 1 7 0"/><rect x="5" y="10" width="14" height="10" rx="3"/><path d="M12 14v2"/></svg>'},
@@ -73,6 +74,7 @@ function appView(){const errorLine=loadError?`<p class="result error">${escapeHt
 function navigation(){return TAB_ITEMS.map(item=>`<button type="button" data-tab="${item.id}" class="tab ${activeTab===item.id?'active':''}" ${activeTab===item.id?'aria-current="page"':''}><span class="tab-icon">${item.icon}</span><span class="tab-label">${item.label}</span></button>`).join('')}
 
 function view(){
+  document.body.classList.toggle('login-media-active',!session);
   const brand=`<div class="brand"><img src="/icon-192.png" alt="" width="34" height="34"><span>No-Comment STC</span></div>`;
   if(!session){app.innerHTML=`<main class="app-shell signed-out"><header class="app-header">${brand}</header><section class="content login-content"><div class="page-wrap login-wrap"><div class="page-heading"><span class="eyebrow">Welcome</span><h1>Sign in</h1><p>Use your account to manage and open saved doors.</p></div>${loginView()}</div></section></main>`;return}
   const headings={open:['Open','Choose a saved door or sequence.'],create:['Create a door','Save a custom location and door code.'],sequences:['Sequences','Build ordered door flows with controlled waits.'],devices:['Devices','Create revocable credentials for iPhone Shortcuts.']},[title,description]=headings[activeTab];
@@ -81,7 +83,7 @@ function view(){
 
 async function loadSession(){const data=await request('/api/session');session=data.authenticated?{csrfToken:data.csrfToken,expiresAt:data.expiresAt,passageEnabled:data.passageEnabled}:null}
 async function loadApp(){loadError='';try{const [readerData,sequenceData,defaultData,deviceData]=await Promise.all([request('/api/readers'),request('/api/sequences'),request('/api/default'),request('/api/device-sessions')]);readers=readerData.readers;sequences=sequenceData.sequences;devices=deviceData.devices;ownerSession=deviceData.ownerSession;defaultSelection=defaultData.defaultSelection;const preferred=defaultValue();selectedTarget=targetExists(preferred)?preferred:(readers[0]?`door:${readers[0].id}`:sequences[0]?`sequence:${sequences[0].id}`:'')}catch(error){if(error.status===401){session=null;return}readers=[];sequences=[];devices=[];ownerSession=null;loadError=error.message}}
-async function start(){try{await loadSession()}catch{session=null}if(session)await loadApp();view()}
+async function start(){try{await loadSession()}catch{session=null}if(session)await loadApp();view();const remaining=Math.max(0,700-(performance.now()-launchStartedAt));setTimeout(()=>document.body.classList.remove('launching'),remaining)}
 async function logout(){try{await request('/api/logout',{method:'POST',headers:{'x-csrf-token':session.csrfToken}})}catch{}session=null;readers=[];sequences=[];devices=[];ownerSession=null;defaultSelection=null;selectedTarget='';activeTab='open';loginError='';loadError='';pendingDelete=null;sequenceDraft=null;oneTimeCredential='';view()}
 
 function openDeleteDialog(type,id,name){pendingDelete={type,id};const dialog=document.querySelector('#delete-dialog');dialog.querySelector('.delete-name').textContent=`${type==='door'?'Door':'Sequence'}: ${name}`;dialog.showModal()}

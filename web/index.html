@@ -14,7 +14,14 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="launching login-media-active">
+  <div class="ambient-media" aria-hidden="true">
+    <img class="ambient-poster" src="/media/launch-poster.jpg" alt="">
+    <video class="ambient-video" autoplay muted loop playsinline preload="metadata" poster="/media/launch-poster.jpg">
+      <source src="/media/launch-background.mp4" type="video/mp4">
+    </video>
+    <div class="ambient-shade"></div>
+  </div>
   <div id="app" aria-live="polite"></div>
   <div id="toast" class="toast" role="status"></div>
   <script src="/app.js" defer></script>
