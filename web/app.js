@@ -1,5 +1,11 @@
 const app=document.querySelector('#app');
 let session=null,readers=[],sequences=[],devices=[],ownerSession=null,defaultSelection=null,selectedTarget='',activeTab='open',loginError='',loadError='',pendingDelete=null,sequenceDraft=null,oneTimeCredential='';
+const TAB_ITEMS=[
+  {id:'open',label:'Open',icon:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 10V7a3.5 3.5 0 1 1 7 0"/><rect x="5" y="10" width="14" height="10" rx="3"/><path d="M12 14v2"/></svg>'},
+  {id:'create',label:'Create',icon:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>'},
+  {id:'sequences',label:'Sequences',icon:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="12" r="2"/><circle cx="6" cy="18" r="2"/><path d="M8 6h3a3 3 0 0 1 3 3v0a3 3 0 0 0 3 3M8 18h3a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3"/></svg>'},
+  {id:'devices',label:'Devices',icon:'<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="3"/><path d="M10 6h4M11 18h2"/></svg>'},
+];
 
 async function request(path,init={}){
   const response=await fetch(path,{...init,headers:{'content-type':'application/json',...(init.headers||{})},cache:'no-store',credentials:'same-origin'});
@@ -64,12 +70,13 @@ function devicesView(){
 }
 
 function appView(){const errorLine=loadError?`<p class="result error">${escapeHtml(loadError)}</p>`:'';if(activeTab==='open')return errorLine+openView();if(activeTab==='create')return errorLine+createDoorView();if(activeTab==='sequences')return errorLine+sequencesView();return errorLine+devicesView()}
+function navigation(){return TAB_ITEMS.map(item=>`<button type="button" data-tab="${item.id}" class="tab ${activeTab===item.id?'active':''}" ${activeTab===item.id?'aria-current="page"':''}><span class="tab-icon">${item.icon}</span><span class="tab-label">${item.label}</span></button>`).join('')}
 
 function view(){
   const brand=`<div class="brand"><img src="/icon-192.png" alt="" width="34" height="34"><span>No-Comment STC</span></div>`;
   if(!session){app.innerHTML=`<main class="app-shell signed-out"><header class="app-header">${brand}</header><section class="content login-content"><div class="page-wrap login-wrap"><div class="page-heading"><span class="eyebrow">Welcome</span><h1>Sign in</h1><p>Use your account to manage and open saved doors.</p></div>${loginView()}</div></section></main>`;return}
   const headings={open:['Open','Choose a saved door or sequence.'],create:['Create a door','Save a custom location and door code.'],sequences:['Sequences','Build ordered door flows with controlled waits.'],devices:['Devices','Create revocable credentials for iPhone Shortcuts.']},[title,description]=headings[activeTab];
-  app.innerHTML=`<main class="app-shell authenticated"><header class="app-header">${brand}<div class="session-bar"><span><i aria-hidden="true"></i>Signed in</span><button type="button" id="logout" class="link">Log out</button></div></header><div class="app-body"><nav class="app-nav" aria-label="Main navigation"><button type="button" data-tab="open" class="tab ${activeTab==='open'?'active':''}" ${activeTab==='open'?'aria-current="page"':''}>Open</button><button type="button" data-tab="create" class="tab ${activeTab==='create'?'active':''}" ${activeTab==='create'?'aria-current="page"':''}>Create</button><button type="button" data-tab="sequences" class="tab ${activeTab==='sequences'?'active':''}" ${activeTab==='sequences'?'aria-current="page"':''}>Sequences</button><button type="button" data-tab="devices" class="tab ${activeTab==='devices'?'active':''}" ${activeTab==='devices'?'aria-current="page"':''}>Devices</button></nav><section class="content"><div class="page-wrap"><div class="page-heading"><span class="eyebrow">Doors</span><h1>${title}</h1><p>${description}</p></div>${appView()}</div></section></div></main><dialog id="delete-dialog"><form method="dialog" id="delete-form"><h2>Delete?</h2><p class="delete-name"></p><p class="delete-error" role="alert"></p><div class="dialog-actions"><button type="submit" value="cancel">Cancel</button><button type="submit" value="confirm" class="danger solid">Delete</button></div></form></dialog>`;
+  app.innerHTML=`<main class="app-shell authenticated"><header class="app-header">${brand}<div class="session-bar"><span class="session-state"><i aria-hidden="true"></i><span>Signed in</span></span><button type="button" id="logout" class="link">Log out</button></div></header><div class="app-body"><nav class="app-nav" aria-label="Main navigation">${navigation()}</nav><section class="content"><div class="page-wrap"><div class="page-heading"><span class="eyebrow">Doors</span><h1>${title}</h1><p>${description}</p></div>${appView()}</div></section></div></main><dialog id="delete-dialog"><form method="dialog" id="delete-form"><h2>Delete?</h2><p class="delete-name"></p><p class="delete-error" role="alert"></p><div class="dialog-actions"><button type="submit" value="cancel">Cancel</button><button type="submit" value="confirm" class="danger solid">Delete</button></div></form></dialog>`;
 }
 
 async function loadSession(){const data=await request('/api/session');session=data.authenticated?{csrfToken:data.csrfToken,expiresAt:data.expiresAt,passageEnabled:data.passageEnabled}:null}
