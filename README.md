@@ -5,6 +5,52 @@
 
 A minimal personal client for authenticated door operations, saved doors, sequences, and device credentials. This repository is **source-available, not open source**. Personal, noncommercial, unmodified use is permitted under the [No-Comment Personal Use License](LICENSE); modification, redistribution, sale, sublicensing, and commercial use are prohibited.
 
+## What it does
+
+STC gym doors are normally opened from the official app, which asks BRP (the membership system behind STC) to let the signed-in member through a specific door reader. This client makes the same request for you, so a door can be opened with one tap in a small web app or with one HTTP request from an automation such as an iPhone Shortcut.
+
+- **Doors** — a saved door is a name plus the `major`/`minor` beacon values of its reader.
+- **Sequences** — up to 8 saved doors opened in order, with a delay of up to 10 seconds between steps (for example the main entrance, then the inner door).
+- **Device credentials** — a token for one automation, so the automation never holds your STC password.
+
+## How it works
+
+```text
+Browser / Home Screen app ──cookie session──┐
+                                            ├──► this server ──► BRP API ──► door reader
+iPhone Shortcut ──device credential─────────┘
+```
+
+1. You sign in once with your own STC/BRP login. The server passes the password to BRP and keeps only the session BRP returns, encrypted with AES-GCM. The browser gets an `HttpOnly` cookie and never sees the BRP tokens.
+2. When you open a door, the server takes the saved `major`/`minor` for that door, resolves the reader with BRP, and sends one passage request on your behalf. A sequence does this step by step and stops at the first failure.
+3. An automation authenticates with a device credential (`brpd_<id>.<secret>`) instead of a login. The server stores only a keyed hash of it and uses your stored BRP session to make the request.
+4. BRP sessions expire. Sign in again when a device reports that it needs reauthorization, or turn on **automatic renewal** in **Devices**: the login is then stored encrypted and the session is renewed every three days.
+
+The server is a Cloudflare Worker (`worker/`) with a D1 database and KV sessions, serving the static web app in `web/`. Each account sees only its own doors, sequences and devices.
+
+## Using it
+
+1. Open the deployed site and sign in with your STC login.
+2. **Add a door**: give it a name and the reader's `major` and `minor`.
+3. Optionally **build a sequence** from saved doors and choose a default door or sequence for the start screen.
+4. Tap the door or sequence to open it. Requests are limited to one per second per door.
+5. For a Shortcut or other automation, open **Devices**, create a device credential and copy it when it is shown (it is shown only once). A credential can be limited to chosen doors or sequences, expires after 30, 60 or 90 days or never, and can be rotated or revoked.
+
+Then one request opens a door:
+
+```http
+POST /api/open-door
+Authorization: Bearer brpd_<id>.<secret>
+Content-Type: application/json
+
+{"doorName": "Main entrance"}
+```
+
+Use `{"sequenceName": "…"}` to run a sequence instead. Send exactly one of the two, using the names saved in the app. Success returns `{"ok":true,"message":"Request completed.","completedSteps":1,"timestamp":"…"}`; `401` means the credential is invalid or the session needs reauthorization, `403` that the target is not allowed for that device, `429` that you should wait a second, and `503` that door opening is switched off on the server. The full reference, including the Shortcut setup, is in [docs/API.md](docs/API.md).
+
+> [!NOTE]
+> The author's own deployment has since moved to a self-hosted Go port of this Worker that runs on a private network. It keeps the same web app, routes and error messages, so everything above applies to both; its source is not in this repository.
+
 ## Install on iPhone
 
 Open the deployed site in Safari and choose **Share → Add to Home Screen**. Launch **No-Comment STC Client** from the Home Screen for standalone mode without Safari controls. A normal Safari tab or browser bookmark retains Safari's address bar.
