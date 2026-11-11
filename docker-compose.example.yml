@@ -1,0 +1,38 @@
+# Example deployment. Copy to docker-compose.yml and replace STC_ORIGIN with
+# the HTTPS URL your reverse proxy serves the app on.
+#
+# The port is bound to loopback; put a TLS-terminating proxy in front of it
+# (for example `tailscale serve --bg --https=10000 http://127.0.0.1:8796`).
+#
+# Secrets are single-line files in ./secrets (see README):
+#   master.key      required, 32 random bytes, base64
+#   legacy-api-key  optional, >= 32 characters
+#   default-reader  optional BRP reader code
+services:
+  stc-client:
+    build: .
+    image: stc-client:latest
+    container_name: stc-client
+    restart: unless-stopped
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    pids_limit: 128
+    mem_limit: 256m
+    environment:
+      STC_DB: /srv/stc-client/stc.db
+      STC_LISTEN: ":8796"
+      STC_KEY_FILE: /etc/stc-client/master.key
+      STC_ORIGIN: https://stc.example.com
+      STC_PASSAGE_ENABLED: "true"
+    volumes:
+      - ./data:/srv/stc-client
+      - ./secrets:/etc/stc-client:ro
+    ports:
+      - "127.0.0.1:8796:8796"
+    stop_grace_period: 10s

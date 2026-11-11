@@ -6,7 +6,7 @@ Report vulnerabilities privately through [GitHub Security Advisories](https://gi
 
 If a credential may have been exposed, revoke or rotate it immediately before reporting. Public issues are not appropriate for unresolved security vulnerabilities.
 
-Automatic renewal stores the opted-in owner's BRP login as an AES-GCM-encrypted server-side blob. Disable automatic renewal to delete that blob. If `SESSION_ENCRYPTION_KEY` or a database export may have been exposed, disable renewal, change the BRP password, rotate the encryption key, and recreate sessions.
+Automatic renewal stores the opted-in owner's BRP login as an AES-GCM-encrypted server-side blob. Disable automatic renewal to delete that blob. If `master.key` or a copy of the database may have been exposed, disable renewal, change the BRP password, replace the key, delete the database, and sign in again.
 
 ## Scope
 
