@@ -26,10 +26,30 @@ iPhone Shortcut ──device credential─────────┘
 3. An automation authenticates with a device credential (`brpd_<id>.<secret>`). The server stores only a keyed hash of it and uses your stored BRP session.
 4. BRP sessions last about a week. Sign in again when a device reports that it needs reauthorization, or turn on **automatic renewal** in **Devices**: the login is then stored encrypted and the session is renewed every three days.
 
-The server is one Go binary (`cmd/stc-client`) with SQLite storage and the web app embedded (`internal/web/static`). Each account sees only its own doors, sequences and devices.
+Each account sees only its own doors, sequences and devices.
 
 > [!NOTE]
-> Earlier versions of this repository were a Cloudflare Worker with an Expo app. That code is still in the Git history; this Go server replaces it and keeps the same routes and API.
+> Up to v1.0.0 this repository was a Cloudflare Worker with an Expo app. That code is still in the Git history; this Go server replaces it and keeps the same routes and API.
+
+## Stack
+
+- **Server:** Go 1.26, standard library `net/http`, SQLite through [`modernc.org/sqlite`](https://pkg.go.dev/modernc.org/sqlite) (pure Go, no cgo). One static binary.
+- **Web app:** plain HTML, CSS and JavaScript with no build step, embedded in the binary and installable as a Home Screen app (PWA). Light and dark themes.
+- **Deployment:** a small unprivileged container (read-only root filesystem, no capabilities) behind any TLS-terminating reverse proxy.
+
+```text
+cmd/stc-client/        entry point and configuration
+internal/brp/          BRP API client (login, reader lookup, passage)
+internal/store/        SQLite schema and queries
+internal/secret/       AES-GCM sealing, keyed hashes, tokens
+internal/web/          HTTP handlers, auth, validation, rate limits
+internal/web/static/   the web app
+docs/API.md            open-door API reference
+```
+
+## The app
+
+Three tabs: **Doors** (the default door as a large Open button, every other door and sequence as a row with its own Open), **Sequences** (the list and the step editor) and **Devices** (the BRP session, automatic renewal and device credentials, each of which can be renamed, reauthorized, rotated or revoked). The interface is in English; some validation messages from the server are in Swedish.
 
 ## Running it
 
